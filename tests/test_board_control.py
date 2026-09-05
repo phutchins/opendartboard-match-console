@@ -112,7 +112,9 @@ class BoardControlTests(unittest.TestCase):
             board_control, "save_state"
         ), patch.object(board_control, "MOTION_SPIKE_THRESHOLD", "0.003"), patch.object(
             board_control, "MOTION_LOW_THRESHOLD", "0.0005"
-        ), patch.object(board_control, "MOTION_MIN_CAMERAS", "2"):
+        ), patch.object(board_control, "MOTION_MIN_CAMERAS", "2"), patch.object(
+            board_control, "MOTION_PRETRIGGER_ACTIVITY_RATIO", "0.0005"
+        ):
             board_control.recreate_opendartboard(state)
 
         create_call = next(arguments for arguments in calls if arguments[0] == "create")
@@ -120,6 +122,9 @@ class BoardControlTests(unittest.TestCase):
         self.assertEqual(create_call[create_call.index("--motion-spike-threshold") + 1], "0.003")
         self.assertEqual(create_call[create_call.index("--motion-low-threshold") + 1], "0.0005")
         self.assertEqual(create_call[create_call.index("--motion-min-cameras") + 1], "2")
+        self.assertEqual(
+            create_call[create_call.index("--motion-pretrigger-activity-ratio") + 1], "0.0005"
+        )
 
     def test_stable_scorer_does_not_receive_modified_only_motion_flags(self):
         calls = []
@@ -135,6 +140,7 @@ class BoardControlTests(unittest.TestCase):
 
         create_call = next(arguments for arguments in calls if arguments[0] == "create")
         self.assertNotIn("--motion-spike-threshold", create_call)
+        self.assertNotIn("--motion-pretrigger-activity-ratio", create_call)
 
 
 if __name__ == "__main__":

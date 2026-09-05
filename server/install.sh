@@ -9,6 +9,7 @@ readonly board_data_dir="${OPENDARTBOARD_DATA_DIR:-${HOME}/.local/share/opendart
 readonly motion_spike_threshold="${OPENDARTBOARD_MOTION_SPIKE_THRESHOLD:-0.08}"
 readonly motion_low_threshold="${OPENDARTBOARD_MOTION_LOW_THRESHOLD:-0.001}"
 readonly motion_min_cameras="${OPENDARTBOARD_MOTION_MIN_CAMERAS:-2}"
+readonly motion_pretrigger_activity_ratio="${OPENDARTBOARD_MOTION_PRETRIGGER_ACTIVITY_RATIO:-0.005}"
 readonly network_name="opendartboard-console"
 readonly control_environment="/etc/default/opendartboard-match-console"
 
@@ -30,6 +31,7 @@ printf 'OPENDARTBOARD_DATA_DIR="%s"\n' "$board_data_dir" >"$environment_file"
 printf 'OPENDARTBOARD_MOTION_SPIKE_THRESHOLD="%s"\n' "$motion_spike_threshold" >>"$environment_file"
 printf 'OPENDARTBOARD_MOTION_LOW_THRESHOLD="%s"\n' "$motion_low_threshold" >>"$environment_file"
 printf 'OPENDARTBOARD_MOTION_MIN_CAMERAS="%s"\n' "$motion_min_cameras" >>"$environment_file"
+printf 'OPENDARTBOARD_MOTION_PRETRIGGER_ACTIVITY_RATIO="%s"\n' "$motion_pretrigger_activity_ratio" >>"$environment_file"
 sudo install -m 0644 "$environment_file" "$control_environment"
 
 sudo systemctl daemon-reload

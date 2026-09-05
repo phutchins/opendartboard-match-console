@@ -50,6 +50,9 @@ def configured_number(name, default, minimum, maximum, integer=False):
 MOTION_SPIKE_THRESHOLD = configured_number("OPENDARTBOARD_MOTION_SPIKE_THRESHOLD", 0.08, 0.0001, 1.0)
 MOTION_LOW_THRESHOLD = configured_number("OPENDARTBOARD_MOTION_LOW_THRESHOLD", 0.001, 0.0, 0.9999)
 MOTION_MIN_CAMERAS = configured_number("OPENDARTBOARD_MOTION_MIN_CAMERAS", 2, 1, len(CAMERAS), integer=True)
+MOTION_PRETRIGGER_ACTIVITY_RATIO = configured_number(
+    "OPENDARTBOARD_MOTION_PRETRIGGER_ACTIVITY_RATIO", 0.005, 0.000001, 1.0
+)
 if float(MOTION_LOW_THRESHOLD) >= float(MOTION_SPIKE_THRESHOLD):
     raise RuntimeError("OPENDARTBOARD_MOTION_LOW_THRESHOLD must be lower than OPENDARTBOARD_MOTION_SPIKE_THRESHOLD")
 
@@ -239,6 +242,7 @@ def recreate_opendartboard(state, start=True):
             "--motion-spike-threshold", MOTION_SPIKE_THRESHOLD,
             "--motion-low-threshold", MOTION_LOW_THRESHOLD,
             "--motion-min-cameras", MOTION_MIN_CAMERAS,
+            "--motion-pretrigger-activity-ratio", MOTION_PRETRIGGER_ACTIVITY_RATIO,
         ])
     docker(*arguments, timeout=30)
     save_state(state)
