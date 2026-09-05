@@ -468,10 +468,13 @@ body {
 .board-admin-empty.is-error { color: #ff8b69; }
 .camera-status-list { display: grid; gap: .45rem; margin: 1rem 0; }
 .camera-status-list > div { display: flex; min-height: 2.55rem; align-items: center; justify-content: space-between; gap: 1rem; padding: .55rem .7rem; border: 1px solid rgba(255,255,255,.07); border-radius: .65rem; background: #0b0f11; }
-.camera-status-list span, .camera-status-list strong { display: flex; align-items: center; gap: .45rem; }
-.camera-status-list span { color: #899399; font-size: .72rem; }
-.camera-status-list strong { color: #ff8b69; font-size: .68rem; }
-.camera-status-list strong.is-ready { color: var(--primary); }
+.camera-status-list .camera-name, .camera-status-list strong { display: flex; align-items: center; gap: .45rem; }
+.camera-status-list .camera-name { color: #899399; font-size: .72rem; }
+.camera-capability { display: grid; justify-items: end; gap: .14rem; text-align: right; }
+.camera-capability strong { color: #ff8b69; font-size: .68rem; text-transform: uppercase; letter-spacing: .035em; }
+.camera-capability small { color: #78848a; font-size: .59rem; }
+.camera-capability.is-full strong, .camera-capability.is-ring strong { color: var(--primary); }
+.camera-capability.is-ring strong { color: #c9e875; }
 .camera-status-list svg { width: .85rem; }
 .board-action-stack { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
 .board-action-stack button { min-height: 2.55rem; }

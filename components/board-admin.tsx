@@ -37,6 +37,9 @@ type CalibrationCamera = {
   camera: number;
   orientation?: string;
   ready: boolean;
+  geometryValid?: boolean;
+  orientationValid?: boolean;
+  contribution?: 'full' | 'ring' | 'unavailable';
   wedge20WireIndex?: number;
 };
 
@@ -137,9 +140,32 @@ const actions: Record<BoardAction, ActionDefinition> = {
 
 function stateLabel(state: BoardStatus['calibration']['state']) {
   if (state === 'ready') return 'Ready';
-  if (state === 'degraded') return 'Needs attention';
+  if (state === 'degraded') return 'Limited';
   if (state === 'calibrating') return 'Calibrating';
   return 'Unknown';
+}
+
+function cameraContribution(camera: CalibrationCamera) {
+  if (camera.contribution) return camera.contribution;
+  if (camera.ready) return 'full';
+  return camera.geometryValid ? 'ring' : 'unavailable';
+}
+
+function cameraRole(camera: CalibrationCamera) {
+  const contribution = cameraContribution(camera);
+  if (contribution === 'full') return 'Full scorer';
+  if (contribution === 'ring') return 'Ring voter';
+  return 'Unavailable';
+}
+
+function cameraDetail(camera: CalibrationCamera) {
+  const contribution = cameraContribution(camera);
+  const position = camera.orientation && camera.orientation !== 'UNKNOWN'
+    ? camera.orientation.toLowerCase()
+    : 'mount unknown';
+  if (contribution === 'full') return `Wedge map ready · ${position}`;
+  if (contribution === 'ring') return `Ring geometry ready · ${position}`;
+  return 'Recalibration needed';
 }
 
 export function BoardAdmin({
@@ -254,12 +280,14 @@ export function BoardAdmin({
       : 'No scorer is running';
   const cameraSummary = useMemo(() => {
     if (!status?.calibration.cameras.length) return 'Camera details unavailable';
-    const ready = status.calibration.cameras.filter((camera) => camera.ready).length;
-    return `${ready} of ${status.calibration.cameras.length} cameras scoring-ready`;
+    const contributing = status.calibration.cameras.filter(
+      (camera) => cameraContribution(camera) !== 'unavailable',
+    ).length;
+    return `${contributing} of ${status.calibration.cameras.length} cameras contributing`;
   }, [status]);
   const displayedCameras: CalibrationCamera[] = status?.calibration.cameras.length
     ? status.calibration.cameras
-    : [0, 1, 2].map((camera) => ({ camera, ready: false }));
+    : [0, 1, 2].map((camera) => ({ camera, ready: false, contribution: 'unavailable' }));
 
   return (
     <section className="board-admin-page">
@@ -322,14 +350,21 @@ export function BoardAdmin({
             <span className="board-card-icon"><Camera /></span>
             <div><p className="eyebrow">Calibration</p><h2>Camera alignment</h2></div>
           </div>
-          <p className="board-card-copy">Clear the board before recalibrating. A healthy setup needs valid geometry and orientation from every camera.</p>
+          <p className="board-card-copy">Every camera contributes ring geometry. One wedge-mapping camera supplies the number while the other views strengthen ring detection.</p>
           <div className="camera-status-list">
-            {displayedCameras.map((camera) => (
-              <div key={camera.camera}>
-                <span><Camera /> Camera {camera.camera + 1}</span>
-                <strong className={camera.ready ? 'is-ready' : ''}>{camera.ready ? <CheckCircle2 /> : <CircleAlert />}{camera.orientation || 'Unknown orientation'}</strong>
-              </div>
-            ))}
+            {displayedCameras.map((camera) => {
+              const contribution = cameraContribution(camera);
+              const contributes = contribution !== 'unavailable';
+              return (
+                <div key={camera.camera}>
+                  <span className="camera-name"><Camera /> Camera {camera.camera + 1}</span>
+                  <div className={`camera-capability is-${contribution}`}>
+                    <strong>{contributes ? <CheckCircle2 /> : <CircleAlert />}{cameraRole(camera)}</strong>
+                    <small>{cameraDetail(camera)}</small>
+                  </div>
+                </div>
+              );
+            })}
           </div>
             <Button disabled={!!runningAction || status?.mode === 'autodarts'} onClick={() => void prepareAction(actions.calibrate)} size="lg">
             {runningAction === 'calibrate' ? <LoaderCircle className="is-spinning" /> : <CrosshairIcon />} Recalibrate cameras

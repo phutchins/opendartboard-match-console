@@ -155,37 +155,59 @@ def calibration_from_logs(running):
         wedge_index = entry.get("wedge20WireIndex", -1)
         orientation = entry.get("orientation", "UNKNOWN")
         reported_health = entry.get("reportedHealth")
+        geometry_valid = entry.get("geometryValid")
+        orientation_valid = entry.get("orientationValid")
         ready = (
             orientation != "UNKNOWN"
             and wedge_index >= 0
             and reported_health in {None, "ready"}
-            and entry.get("geometryValid", True)
-            and entry.get("orientationValid", True)
+            and geometry_valid is not False
+            and orientation_valid is not False
         )
+        # Older releases do not emit explicit health fields. Only infer ring
+        # geometry from a complete legacy calibration; never claim that an
+        # unknown legacy camera can participate in ring consensus.
+        if geometry_valid is None:
+            geometry_valid = ready
+        if orientation_valid is None:
+            orientation_valid = ready
+        contribution = "full" if ready else "ring" if geometry_valid else "unavailable"
         camera_status.append({
             "camera": index,
             "orientation": orientation,
             "wedge20WireIndex": wedge_index,
             "ready": ready,
+            "geometryValid": geometry_valid,
+            "orientationValid": orientation_valid,
+            "contribution": contribution,
         })
 
     if "Capturing frames for calibration" in logs and "DARTBOARD CALIBRATION COMPLETED" not in logs:
         return {"state": "calibrating", "message": "Capturing a clean board and locating rings and wires.", "cameras": camera_status}
-    if len(camera_status) >= len(CAMERAS) and all(camera["ready"] for camera in camera_status[-len(CAMERAS):]):
-        return {"state": "ready", "message": "All cameras have valid board orientation.", "cameras": camera_status[-len(CAMERAS):]}
+    latest_cameras = camera_status[-len(CAMERAS):]
+    full_count = sum(1 for camera in latest_cameras if camera["contribution"] == "full")
+    ring_count = sum(1 for camera in latest_cameras if camera["contribution"] == "ring")
+    contributing_count = full_count + ring_count
+    if (
+        len(latest_cameras) >= len(CAMERAS)
+        and contributing_count == len(CAMERAS)
+        and full_count > 0
+    ):
+        message = (
+            "All {} cameras contribute to scoring: {} maps wedge numbers and {} provide ring consensus."
+        ).format(len(CAMERAS), full_count, ring_count)
+        return {"state": "ready", "message": message, "cameras": latest_cameras}
     if camera_status:
-        ready_count = sum(1 for camera in camera_status[-len(CAMERAS):] if camera["ready"])
-        if ready_count > 0:
+        if full_count > 0:
             message = (
-                "{} of {} cameras are scoring-ready; reduced-confidence single-camera scoring is active "
-                "and the remaining views are motion-only."
-            ).format(ready_count, len(CAMERAS))
+                "{} of {} cameras contribute to scoring: {} maps wedge numbers and {} provide ring consensus."
+            ).format(contributing_count, len(CAMERAS), full_count, ring_count)
         else:
             message = "0 of {} cameras are scoring-ready; numbered scoring is unavailable.".format(len(CAMERAS))
         return {
             "state": "degraded",
             "message": message,
-            "cameras": camera_status[-len(CAMERAS):],
+            "cameras": latest_cameras,
         }
     return {"state": "unknown", "message": "Waiting for calibration diagnostics.", "cameras": []}
 

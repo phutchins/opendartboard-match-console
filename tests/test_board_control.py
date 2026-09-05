@@ -35,7 +35,8 @@ class BoardControlTests(unittest.TestCase):
         self.assertEqual(len(status["cameras"]), 3)
         self.assertFalse(status["cameras"][0]["ready"])
         self.assertTrue(status["cameras"][1]["ready"])
-        self.assertIn("single-camera scoring is active", status["message"])
+        self.assertEqual(status["cameras"][0]["contribution"], "unavailable")
+        self.assertIn("2 of 3 cameras contribute", status["message"])
 
     def test_calibration_logs_accept_all_oriented_cameras(self):
         logs = "\n".join(
@@ -50,11 +51,12 @@ class BoardControlTests(unittest.TestCase):
 
         self.assertEqual(status["state"], "ready")
         self.assertTrue(all(camera["ready"] for camera in status["cameras"]))
+        self.assertTrue(all(camera["contribution"] == "full" for camera in status["cameras"]))
 
-    def test_calibration_logs_reject_degraded_orientation(self):
+    def test_calibration_logs_reject_invalid_geometry(self):
         logs = """
         CALIBRATION_STATUS camera=0 status=READY geometry=valid orientation=valid camera_position=TOP wedge20_wire=2 south_wire=12 wires_valid=true
-        CALIBRATION_STATUS camera=1 status=DEGRADED geometry=valid orientation=invalid camera_position=UNKNOWN wedge20_wire=-1 south_wire=-1 wires_valid=true
+        CALIBRATION_STATUS camera=1 status=INVALID geometry=invalid orientation=invalid camera_position=UNKNOWN wedge20_wire=-1 south_wire=-1 wires_valid=false
         CALIBRATION_STATUS camera=2 status=READY geometry=valid orientation=valid camera_position=BOTTOM wedge20_wire=17 south_wire=7 wires_valid=true
         """
         with patch.object(board_control, "docker", return_value=Result(stdout=logs)):
@@ -62,7 +64,25 @@ class BoardControlTests(unittest.TestCase):
 
         self.assertEqual(status["state"], "degraded")
         self.assertFalse(status["cameras"][1]["ready"])
-        self.assertIn("single-camera scoring is active", status["message"])
+        self.assertEqual(status["cameras"][1]["contribution"], "unavailable")
+        self.assertIn("2 of 3 cameras contribute", status["message"])
+
+    def test_ring_consensus_setup_is_ready_with_one_wedge_mapper(self):
+        logs = """
+        CALIBRATION_STATUS camera=0 status=DEGRADED geometry=valid orientation=invalid camera_position=UNKNOWN wedge20_wire=-1 south_wire=19 wires_valid=true
+        CALIBRATION_STATUS camera=1 status=READY geometry=valid orientation=valid camera_position=MIDDLE wedge20_wire=9 south_wire=19 wires_valid=true
+        CALIBRATION_STATUS camera=2 status=DEGRADED geometry=valid orientation=invalid camera_position=BOTTOM wedge20_wire=-1 south_wire=0 wires_valid=true
+        DARTBOARD CALIBRATION COMPLETED
+        """
+        with patch.object(board_control, "docker", return_value=Result(stdout=logs)):
+            status = board_control.calibration_from_logs(True)
+
+        self.assertEqual(status["state"], "ready")
+        self.assertEqual(
+            [camera["contribution"] for camera in status["cameras"]],
+            ["ring", "full", "ring"],
+        )
+        self.assertIn("All 3 cameras contribute", status["message"])
 
     def test_calibration_logs_report_numbered_scoring_unavailable_without_ready_camera(self):
         logs = """
