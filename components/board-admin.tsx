@@ -255,7 +255,7 @@ export function BoardAdmin({
   const cameraSummary = useMemo(() => {
     if (!status?.calibration.cameras.length) return 'Camera details unavailable';
     const ready = status.calibration.cameras.filter((camera) => camera.ready).length;
-    return `${ready} of ${status.calibration.cameras.length} cameras oriented`;
+    return `${ready} of ${status.calibration.cameras.length} cameras scoring-ready`;
   }, [status]);
   const displayedCameras: CalibrationCamera[] = status?.calibration.cameras.length
     ? status.calibration.cameras

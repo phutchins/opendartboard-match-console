@@ -8,6 +8,7 @@ service names.
 
 import http.cookies
 import json
+import math
 import os
 import re
 import secrets
@@ -33,6 +34,24 @@ ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 SESSION_TTL = 3600
 CONFIRMATION_TTL = 60
 CAMERAS = ("/dev/video0", "/dev/video1", "/dev/video2")
+
+
+def configured_number(name, default, minimum, maximum, integer=False):
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value) if integer else float(raw_value)
+    except ValueError:
+        raise RuntimeError("{} must be numeric".format(name))
+    if not math.isfinite(float(value)) or value < minimum or value > maximum:
+        raise RuntimeError("{} must be between {} and {}".format(name, minimum, maximum))
+    return str(value)
+
+
+MOTION_SPIKE_THRESHOLD = configured_number("OPENDARTBOARD_MOTION_SPIKE_THRESHOLD", 0.08, 0.0001, 1.0)
+MOTION_LOW_THRESHOLD = configured_number("OPENDARTBOARD_MOTION_LOW_THRESHOLD", 0.001, 0.0, 0.9999)
+MOTION_MIN_CAMERAS = configured_number("OPENDARTBOARD_MOTION_MIN_CAMERAS", 2, 1, len(CAMERAS), integer=True)
+if float(MOTION_LOW_THRESHOLD) >= float(MOTION_SPIKE_THRESHOLD):
+    raise RuntimeError("OPENDARTBOARD_MOTION_LOW_THRESHOLD must be lower than OPENDARTBOARD_MOTION_SPIKE_THRESHOLD")
 
 
 def utc_now():
@@ -153,9 +172,16 @@ def calibration_from_logs(running):
         return {"state": "ready", "message": "All cameras have valid board orientation.", "cameras": camera_status[-len(CAMERAS):]}
     if camera_status:
         ready_count = sum(1 for camera in camera_status[-len(CAMERAS):] if camera["ready"])
+        if ready_count > 0:
+            message = (
+                "{} of {} cameras are scoring-ready; reduced-confidence single-camera scoring is active "
+                "and the remaining views are motion-only."
+            ).format(ready_count, len(CAMERAS))
+        else:
+            message = "0 of {} cameras are scoring-ready; numbered scoring is unavailable.".format(len(CAMERAS))
         return {
             "state": "degraded",
-            "message": "{} of {} cameras have valid orientation; numbered scoring is not trustworthy yet.".format(ready_count, len(CAMERAS)),
+            "message": message,
             "cameras": camera_status[-len(CAMERAS):],
         }
     return {"state": "unknown", "message": "Waiting for calibration diagnostics.", "cameras": []}
@@ -208,6 +234,12 @@ def recreate_opendartboard(state, start=True):
     if state["debug"]:
         arguments.append("--debug")
     arguments.extend(["--autocams", "--width", "1280", "--height", "720", "--fps", "30"])
+    if state["release"] == "modified":
+        arguments.extend([
+            "--motion-spike-threshold", MOTION_SPIKE_THRESHOLD,
+            "--motion-low-threshold", MOTION_LOW_THRESHOLD,
+            "--motion-min-cameras", MOTION_MIN_CAMERAS,
+        ])
     docker(*arguments, timeout=30)
     save_state(state)
     if start:
