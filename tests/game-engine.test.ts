@@ -45,6 +45,7 @@ test('scores an x01 visit and rotates players when darts are removed', () => {
   assert.equal(match.darts.length, 0);
   assert.equal(match.visits.length, 1);
   assert.deepEqual(match.visits[0].darts, ['T20', 'S20', 'D10']);
+  assert.deepEqual(match.visits[0].dartDetails.map((dart) => dart.label), ['T20', 'S20', 'D10']);
 });
 
 test('enforces double-in and double-out bust rules', () => {
@@ -132,4 +133,24 @@ test('uses canonical board coordinates when the scorer supplies them', () => {
 
   assert.equal(point.x, BOARD_CENTER + 85);
   assert.equal(point.y, BOARD_CENTER - 42.5);
+});
+
+test('preserves canonical position and throw metadata after a visit completes', () => {
+  let match = createMatch({
+    mode: '501', players: ['Ada'], inRule: 'straight', outRule: 'double',
+  });
+  match = applyHit(match, {
+    ...hit('T20'),
+    boardPosition: { x: 0.02, y: -0.6 },
+    inputSource: 'board',
+    thrownAt: '2026-09-05T15:42:10.123Z',
+  });
+  match = endVisit(match);
+
+  assert.deepEqual(match.visits[0].dartDetails[0], {
+    ...hit('T20'),
+    boardPosition: { x: 0.02, y: -0.6 },
+    inputSource: 'board',
+    thrownAt: '2026-09-05T15:42:10.123Z',
+  });
 });

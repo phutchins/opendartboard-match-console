@@ -11,6 +11,8 @@ export type ParsedHit = {
   target: number | null;
   multiplier: number;
   isDouble: boolean;
+  inputSource?: 'board' | 'manual' | 'unknown';
+  thrownAt?: string;
   cameraPosition?: { x: number; y: number };
   /** Canonical board coordinates in the range -1..1, with +x right and +y down. */
   boardPosition?: { x: number; y: number };
@@ -33,6 +35,7 @@ export type VisitRecord = {
   playerIndex: number;
   playerName: string;
   darts: string[];
+  dartDetails: ParsedHit[];
   score: number;
   bust: boolean;
   remaining: number;
@@ -124,6 +127,7 @@ function completedVisit(
     playerIndex: state.activePlayer,
     playerName: state.players[state.activePlayer].name,
     darts: darts.map((dart) => dart.label),
+    dartDetails: darts.map((dart) => ({ ...dart })),
     score,
     bust,
     remaining,

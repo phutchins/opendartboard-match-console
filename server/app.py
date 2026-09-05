@@ -2,14 +2,17 @@ import json
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 MATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
 VALID_MODES = {"301", "501", "cricket"}
 VALID_RULES = {"straight", "double"}
+VALID_PERIODS = {"7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None}
+SCORE_PATTERN = re.compile(r"^(?:MISS|BULL|OUTER|[SDT](?:[1-9]|1[0-9]|20))$")
+INPUT_SOURCES = {"board", "manual", "unknown", "legacy"}
 
 
 def utc_now():
@@ -28,6 +31,53 @@ def safe_int(value, minimum=0, maximum=1_000_000):
     return max(minimum, min(maximum, parsed))
 
 
+def normalized_timestamp(value, fallback):
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return fallback
+
+
+def clean_label(value):
+    label = str(value or "").strip().upper()[:12]
+    return label if SCORE_PATTERN.match(label) else None
+
+
+def clean_position(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        x = float(value.get("x"))
+        y = float(value.get("y"))
+    except (TypeError, ValueError):
+        return None
+    if not (-2 <= x <= 2 and -2 <= y <= 2):
+        return None
+    return x, y
+
+
+def clean_dart(value, fallback_label, fallback_time, legacy=False):
+    detail = value if isinstance(value, dict) else {}
+    label = clean_label(detail.get("label")) or clean_label(fallback_label)
+    if not label:
+        return None
+    position = clean_position(detail.get("boardPosition"))
+    source = str(detail.get("inputSource") or ("legacy" if legacy else "unknown"))
+    if source not in INPUT_SOURCES:
+        source = "unknown"
+    return {
+        "label": label,
+        "board_x": position[0] if position else None,
+        "board_y": position[1] if position else None,
+        "coordinate_source": "canonical" if position else "none",
+        "input_source": source,
+        "thrown_at": normalized_timestamp(detail.get("thrownAt"), fallback_time),
+    }
+
+
 class StatsDatabase:
     def __init__(self, path):
         self.path = path
@@ -44,6 +94,7 @@ class StatsDatabase:
         return connection
 
     def initialize(self):
+        self.backup_legacy_database()
         with self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(
@@ -95,6 +146,21 @@ class StatsDatabase:
                     UNIQUE (match_id, visit_number)
                 );
 
+                CREATE TABLE IF NOT EXISTS dart_throws (
+                    match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+                    player_id INTEGER NOT NULL REFERENCES players(id),
+                    visit_number INTEGER NOT NULL,
+                    dart_number INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    board_x REAL,
+                    board_y REAL,
+                    coordinate_source TEXT NOT NULL CHECK (coordinate_source IN ('canonical', 'none')),
+                    input_source TEXT NOT NULL CHECK (input_source IN ('board', 'manual', 'unknown', 'legacy')),
+                    thrown_at TEXT NOT NULL,
+                    provisional INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (match_id, visit_number, dart_number)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_matches_status_started
                 ON matches(status, started_at DESC);
 
@@ -103,9 +169,75 @@ class StatsDatabase:
 
                 CREATE INDEX IF NOT EXISTS idx_visits_match_player
                 ON visits(match_id, player_id);
+
+                CREATE INDEX IF NOT EXISTS idx_dart_throws_player_time
+                ON dart_throws(player_id, thrown_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_dart_throws_match_player
+                ON dart_throws(match_id, player_id);
                 """
             )
+            self.backfill_legacy_darts(connection)
+            connection.execute("PRAGMA user_version = 2")
             connection.execute("PRAGMA optimize")
+
+    def backup_legacy_database(self):
+        if not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
+            return
+        backup_path = f"{self.path}.pre-v2.bak"
+        if os.path.exists(backup_path):
+            return
+        with sqlite3.connect(self.path) as source:
+            version = source.execute("PRAGMA user_version").fetchone()[0]
+            has_visits = source.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'visits'"
+            ).fetchone()
+            if version >= 2 or not has_visits:
+                return
+            with sqlite3.connect(backup_path) as destination:
+                source.backup(destination)
+
+    def backfill_legacy_darts(self, connection):
+        rows = connection.execute(
+            """
+            SELECT match_id, player_id, visit_number, darts_json, created_at
+            FROM visits
+            WHERE NOT EXISTS (
+                SELECT 1 FROM dart_throws d
+                WHERE d.match_id = visits.match_id
+                  AND d.visit_number = visits.visit_number
+            )
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                labels = json.loads(row["darts_json"])
+            except (TypeError, json.JSONDecodeError):
+                labels = []
+            for dart_number, value in enumerate(labels[:3], start=1):
+                dart = clean_dart({}, value, row["created_at"], legacy=True)
+                if dart:
+                    self.insert_dart(
+                        connection, row["match_id"], row["player_id"],
+                        row["visit_number"], dart_number, dart, False,
+                    )
+
+    @staticmethod
+    def insert_dart(connection, match_id, player_id, visit_number, dart_number, dart, provisional):
+        connection.execute(
+            """
+            INSERT INTO dart_throws(
+                match_id, player_id, visit_number, dart_number, label,
+                board_x, board_y, coordinate_source, input_source,
+                thrown_at, provisional
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                match_id, player_id, visit_number, dart_number, dart["label"],
+                dart["board_x"], dart["board_y"], dart["coordinate_source"],
+                dart["input_source"], dart["thrown_at"], 1 if provisional else 0,
+            ),
+        )
 
     def validate_match(self, payload):
         if not isinstance(payload, dict):
@@ -153,6 +285,8 @@ class StatsDatabase:
             "status": status,
             "players": clean_players,
             "visits": visits,
+            "active_player": safe_int(payload.get("activePlayer"), 0, len(clean_players) - 1),
+            "darts": payload.get("darts") if isinstance(payload.get("darts"), list) else [],
             "winner": payload.get("winner"),
             "started_at": str(payload.get("startedAt") or utc_now()),
             "completed_at": payload.get("completedAt"),
@@ -210,6 +344,7 @@ class StatsDatabase:
                     match["status"], winner_player_id, match["started_at"], now, completed_at,
                 ),
             )
+            connection.execute("DELETE FROM dart_throws WHERE match_id = ?", (match["id"],))
             connection.execute("DELETE FROM visits WHERE match_id = ?", (match["id"],))
             connection.execute("DELETE FROM match_players WHERE match_id = ?", (match["id"],))
 
@@ -219,7 +354,8 @@ class StatsDatabase:
                 scored = safe_int((visit or {}).get("score"))
                 remaining = safe_int((visit or {}).get("remaining"))
                 darts = (visit or {}).get("darts") or []
-                clean_darts = [str(dart)[:12] for dart in darts[:3]]
+                clean_darts = [label for dart in darts[:3] if (label := clean_label(dart))]
+                visit_time = normalized_timestamp((visit or {}).get("createdAt"), now)
                 highest_visits[player_index] = max(highest_visits[player_index], scored)
                 connection.execute(
                     """
@@ -232,9 +368,30 @@ class StatsDatabase:
                         match["id"], player_ids[player_index], sequence, scored,
                         1 if (visit or {}).get("bust") else 0, remaining,
                         json.dumps(clean_darts, separators=(",", ":")),
-                        str((visit or {}).get("createdAt") or now),
+                        visit_time,
                     ),
                 )
+                details = (visit or {}).get("dartDetails")
+                has_details = isinstance(details, list)
+                for dart_number, label in enumerate(clean_darts, start=1):
+                    detail = details[dart_number - 1] if has_details and dart_number <= len(details) else {}
+                    dart = clean_dart(detail, label, visit_time, legacy=not has_details)
+                    if dart:
+                        self.insert_dart(
+                            connection, match["id"], player_ids[player_index],
+                            sequence, dart_number, dart, False,
+                        )
+
+            if match["status"] == "active":
+                player_index = match["active_player"]
+                visit_number = len(match["visits"]) + 1
+                for dart_number, detail in enumerate(match["darts"][:3], start=1):
+                    dart = clean_dart(detail, None, now)
+                    if dart:
+                        self.insert_dart(
+                            connection, match["id"], player_ids[player_index],
+                            visit_number, dart_number, dart, True,
+                        )
 
             for index, player in enumerate(match["players"]):
                 outcome = "win" if winner_player_id == player_ids[index] else (
@@ -258,6 +415,74 @@ class StatsDatabase:
 
             connection.commit()
         return {"ok": True, "matchId": match["id"], "savedAt": now}
+
+    def heatmap(self, player_id, period="30d", now=None):
+        if period not in VALID_PERIODS:
+            raise ValueError("Invalid heatmap period")
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        days = VALID_PERIODS[period]
+        range_start = (reference - timedelta(days=days)).isoformat() if days else None
+
+        with self.connect() as connection:
+            player = connection.execute(
+                "SELECT id, name FROM players WHERE id = ?", (player_id,),
+            ).fetchone()
+            if not player:
+                raise KeyError("Player not found")
+            parameters = [player_id]
+            cutoff_clause = ""
+            if range_start:
+                cutoff_clause = "AND d.thrown_at >= ?"
+                parameters.append(range_start)
+            rows = connection.execute(
+                f"""
+                SELECT d.label, d.board_x, d.board_y, d.coordinate_source,
+                       d.input_source, d.thrown_at
+                FROM dart_throws d
+                JOIN matches m ON m.id = d.match_id
+                WHERE d.player_id = ? AND m.status = 'completed'
+                  AND d.provisional = 0 {cutoff_clause}
+                ORDER BY d.thrown_at ASC, d.visit_number ASC, d.dart_number ASC
+                """,
+                parameters,
+            ).fetchall()
+
+        exact_points = []
+        estimated = {}
+        unplottable = 0
+        for row in rows:
+            if row["coordinate_source"] == "canonical" and row["board_x"] is not None:
+                exact_points.append({
+                    "label": row["label"],
+                    "x": row["board_x"],
+                    "y": row["board_y"],
+                    "thrownAt": row["thrown_at"],
+                })
+            elif row["label"] != "MISS" and clean_label(row["label"]):
+                estimated[row["label"]] = estimated.get(row["label"], 0) + 1
+            else:
+                unplottable += 1
+
+        return {
+            "schemaVersion": 1,
+            "period": period,
+            "rangeStart": range_start,
+            "player": {"id": player["id"], "name": player["name"]},
+            "exactPoints": exact_points,
+            "estimatedBeds": [
+                {"label": label, "count": count}
+                for label, count in sorted(estimated.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "totals": {
+                "darts": len(rows),
+                "exact": len(exact_points),
+                "estimated": sum(estimated.values()),
+                "unplottable": unplottable,
+            },
+            "generatedAt": reference.astimezone(timezone.utc).isoformat(),
+        }
 
     def stats(self):
         with self.connect() as connection:
@@ -390,12 +615,24 @@ class ApiHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def do_GET(self):
-        path = urlparse(self.path).path.rstrip("/")
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path.rstrip("/")
         if path == "/api/health":
             self.send_json(200, {"status": "ok", "service": "OpenDartboard Stats"})
             return
         if path == "/api/stats":
             self.send_json(200, self.database.stats())
+            return
+        if path == "/api/heatmap":
+            try:
+                query = parse_qs(parsed_url.query)
+                player_id = int((query.get("playerId") or [""])[0])
+                period = (query.get("period") or ["30d"])[0]
+                self.send_json(200, self.database.heatmap(player_id, period))
+            except (TypeError, ValueError):
+                self.send_json(400, {"error": "A valid playerId and period are required"})
+            except KeyError:
+                self.send_json(404, {"error": "Player not found"})
             return
         self.send_json(404, {"error": "Not found"})
 

@@ -6,6 +6,7 @@ import {
   CircleDot,
   Crown,
   Database,
+  Flame,
   Gauge,
   History,
   RefreshCw,
@@ -18,7 +19,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { DartHeatmap } from '@/components/dart-heatmap';
 import { Skeleton } from '@/components/ui/skeleton';
+import type { HeatmapData } from '@/lib/heatmap';
 import {
   Table,
   TableBody,
@@ -67,6 +70,23 @@ type StatsData = {
   generatedAt: string;
 };
 
+type HeatmapPeriod = '7d' | '30d' | '90d' | '1y' | 'all';
+type HistoricalHeatmap = HeatmapData & {
+  schemaVersion: number;
+  period: HeatmapPeriod;
+  rangeStart: string | null;
+  player: { id: number; name: string };
+  generatedAt: string;
+};
+
+const periods: Array<{ value: HeatmapPeriod; label: string }> = [
+  { value: '7d', label: '7D' },
+  { value: '30d', label: '30D' },
+  { value: '90d', label: '90D' },
+  { value: '1y', label: '1Y' },
+  { value: 'all', label: 'All' },
+];
+
 const formatDate = (value: string | null) => {
   if (!value) return '—';
   return new Intl.DateTimeFormat(undefined, {
@@ -80,6 +100,12 @@ export function StatsDashboard({ onPlay }: { onPlay: () => void }) {
   const [data, setData] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
+  const [period, setPeriod] = useState<HeatmapPeriod>('30d');
+  const [heatmap, setHeatmap] = useState<HistoricalHeatmap | null>(null);
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
+  const [heatmapError, setHeatmapError] = useState<string | null>(null);
+  const [heatmapRefresh, setHeatmapRefresh] = useState(0);
 
   const loadStats = useCallback(async () => {
     setLoading(true);
@@ -87,7 +113,14 @@ export function StatsDashboard({ onPlay }: { onPlay: () => void }) {
     try {
       const response = await fetch('/api/stats', { cache: 'no-store' });
       if (!response.ok) throw new Error('Stats service did not respond');
-      setData(await response.json() as StatsData);
+      const next = await response.json() as StatsData;
+      setData(next);
+      setSelectedPlayerId((current) => (
+        current !== null && next.players.some((player) => player.id === current)
+          ? current
+          : next.players[0]?.id ?? null
+      ));
+      setHeatmapRefresh((value) => value + 1);
     } catch {
       setError('The local history service is offline. Your current match still works.');
     } finally {
@@ -98,6 +131,34 @@ export function StatsDashboard({ onPlay }: { onPlay: () => void }) {
   useEffect(() => {
     void loadStats();
   }, [loadStats]);
+
+  useEffect(() => {
+    if (selectedPlayerId === null) {
+      setHeatmap(null);
+      return;
+    }
+    const controller = new AbortController();
+    setHeatmapLoading(true);
+    setHeatmapError(null);
+    fetch(`/api/heatmap?playerId=${selectedPlayerId}&period=${period}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('Heat map service did not respond');
+        return response.json() as Promise<HistoricalHeatmap>;
+      })
+      .then(setHeatmap)
+      .catch((requestError: unknown) => {
+        if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) {
+          setHeatmapError('Could not load this player’s throw map.');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setHeatmapLoading(false);
+      });
+    return () => controller.abort();
+  }, [heatmapRefresh, period, selectedPlayerId]);
 
   const insights = useMemo(() => {
     if (!data?.players.length) return [];
@@ -161,6 +222,49 @@ export function StatsDashboard({ onPlay }: { onPlay: () => void }) {
               ))}
             </section>
           )}
+
+          <section className="stats-panel stats-heatmap-panel">
+            <div className="stats-panel-heading heatmap-panel-heading">
+              <div className="heatmap-title-lockup">
+                <span><Flame /></span>
+                <div><p className="eyebrow">Throw tendencies</p><h2>Player heat map</h2></div>
+              </div>
+              <div className="historical-heatmap-controls">
+                <label>
+                  <span>Player</span>
+                  <select
+                    aria-label="Heat map player"
+                    onChange={(event) => setSelectedPlayerId(Number(event.target.value))}
+                    value={selectedPlayerId ?? ''}
+                  >
+                    {data?.players.map((player) => <option key={player.id} value={player.id}>{player.name}</option>)}
+                  </select>
+                </label>
+                <div className="period-toggle" role="group" aria-label="Heat map period">
+                  {periods.map((option) => (
+                    <button
+                      aria-pressed={period === option.value}
+                      className={period === option.value ? 'is-active' : ''}
+                      key={option.value}
+                      onClick={() => setPeriod(option.value)}
+                      type="button"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="stats-heatmap-body">
+              {heatmapLoading ? (
+                <div className="heatmap-loading"><Skeleton className="aspect-square w-full max-w-md rounded-full" /><Skeleton className="h-28 w-full" /></div>
+              ) : heatmapError ? (
+                <div className="heatmap-error"><Database /><span>{heatmapError}</span></div>
+              ) : heatmap ? (
+                <DartHeatmap data={heatmap} />
+              ) : null}
+            </div>
+          </section>
 
           <div className="stats-content-grid">
             <section className="stats-panel player-records-panel">

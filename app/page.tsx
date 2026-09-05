@@ -26,8 +26,8 @@ import { Badge } from '@/components/ui/badge';
 import { BoardAdmin } from '@/components/board-admin';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { MatchDartboard } from '@/components/match-dartboard';
 import { StatsDashboard } from '@/components/stats-dashboard';
-import { VisualDartboard } from '@/components/visual-dartboard';
 import {
   NativeSelect,
   NativeSelectOption,
@@ -68,6 +68,19 @@ const modeDescriptions: Record<GameMode, string> = {
   '501': 'Classic',
   '301': 'Quick leg',
   cricket: '15–Bull',
+};
+
+const throwTimestamp = (value?: number | string) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+    const date = new Date(milliseconds);
+    if (Number.isFinite(date.getTime())) return date.toISOString();
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const date = new Date(value);
+    if (Number.isFinite(date.getTime())) return date.toISOString();
+  }
+  return new Date().toISOString();
 };
 
 export default function Home() {
@@ -153,6 +166,7 @@ export default function Home() {
     source = 'Manual',
     cameraPosition?: { x: number; y: number },
     boardPosition?: { x: number; y: number },
+    occurredAt?: number | string,
   ) => {
     if (token === 'END') {
       commit(endVisit);
@@ -163,6 +177,8 @@ export default function Home() {
     if (!parsedHit) return;
     const hit = {
       ...parsedHit,
+      inputSource: source.toLowerCase() === 'board' ? 'board' as const : 'manual' as const,
+      thrownAt: throwTimestamp(occurredAt),
       ...(cameraPosition
         && Number.isFinite(cameraPosition.x)
         && Number.isFinite(cameraPosition.y) ? { cameraPosition } : {}),
@@ -213,7 +229,7 @@ export default function Home() {
           const normalizedPosition = payload.boardPosition
             || payload.board_position
             || payload.normalizedPosition;
-          scoreToken(payload.score.toUpperCase(), 'Board', payload.position, normalizedPosition);
+          scoreToken(payload.score.toUpperCase(), 'Board', payload.position, normalizedPosition, payload.timestamp);
         } catch {
           setLastSignal('Ignored an unreadable board message');
         }
@@ -600,7 +616,7 @@ function X01Board({
   const player = match.players[match.activePlayer];
   return (
     <div className="x01-live-stage">
-      <VisualDartboard darts={match.darts} />
+      <MatchDartboard match={match} />
       <div className="x01-score-stack">
         <div className={`active-player-card ${match.bust ? 'is-bust' : ''}`}>
           <div className="player-meta">
@@ -623,7 +639,7 @@ function X01Board({
 function CricketBoard({ match }: { match: MatchState }) {
   return (
     <div className="cricket-live-stage">
-      <VisualDartboard darts={match.darts} />
+      <MatchDartboard match={match} />
       <div className={`cricket-board cricket-players-${match.players.length}`}>
         <div className="cricket-row cricket-header-row">
           <span>Target</span>

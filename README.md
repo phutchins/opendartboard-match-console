@@ -9,6 +9,7 @@ A local-first game client and board operations console for [OpenDartboard](https
 - Plays 301, 501, and Cricket with one to four local players
 - Receives throws from OpenDartboard's WebSocket API
 - Shows the live visit, averages, checkouts, and darts currently in the board
+- Builds an in-game heat map for every player and historical maps over 7, 30, or 90 days, one year, or all time
 - Supports undo and manual score correction
 - Stores match history, player averages, win rates, and high visits in SQLite
 - Shows calibration health and individual camera orientation
@@ -35,7 +36,7 @@ Board operations do **not** expose SSH, Docker, sudo, or host credentials to Jav
 ```bash
 npm install
 npm run build
-node --experimental-strip-types --test tests/game-engine.test.ts
+node --experimental-strip-types --test tests/game-engine.test.ts tests/heatmap.test.ts
 python3 -m unittest tests/test_server.py tests/test_board_control.py
 ```
 
@@ -66,6 +67,8 @@ The client supports the current `score`, `position`, and `timestamp` fields. It 
 ```
 
 Canonical coordinates use the bull as the origin, `+x` to the player's right, `+y` down, and the outer-double radius as `1.0`. When canonical coordinates are absent, the client places a deterministic marker inside the reported scoring bed rather than pretending a camera pixel is an accurate board coordinate.
+
+Heat maps preserve that distinction: calibrated throws appear as exact glowing points, while older or manually entered scores shade the reported scoring bed. A single-number score shades both possible single beds, and an unlocated miss is counted as unplottable instead of being placed at an invented location. Completed-game heat maps are available from `GET /api/heatmap?playerId=<id>&period=30d`; supported periods are `7d`, `30d`, `90d`, `1y`, and `all`.
 
 ## Security notes
 
