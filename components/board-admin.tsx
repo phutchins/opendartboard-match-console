@@ -205,9 +205,11 @@ export function BoardAdmin({
       const payload = await response.json() as BoardStatus;
       setStatus(payload);
       setError(null);
+      return payload;
     } catch (caught) {
       setStatus(null);
       setError(caught instanceof Error ? caught.message : 'Could not reach board controls');
+      return null;
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -278,6 +280,16 @@ export function BoardAdmin({
         setOverlayVersion(Date.now());
         void refresh(true);
       }, 1200);
+      if (requested.action === 'calibrate') {
+        window.setTimeout(async () => {
+          const refreshed = await refresh(true);
+          setOverlayErrors({});
+          setOverlayVersion(Date.now());
+          if (refreshed) {
+            setNotice(`Calibration finished. ${refreshed.calibration.message}`);
+          }
+        }, 10_000);
+      }
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : 'The board action failed');
     } finally {
