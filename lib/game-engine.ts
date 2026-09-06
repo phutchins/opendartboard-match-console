@@ -12,6 +12,8 @@ export type ParsedHit = {
   multiplier: number;
   isDouble: boolean;
   inputSource?: 'board' | 'manual' | 'unknown';
+  /** Scorer event used to find the corresponding diagnostic capture. */
+  boardEventId?: string;
   thrownAt?: string;
   cameraPosition?: { x: number; y: number };
   /** Canonical board coordinates in the range -1..1, with +x right and +y down. */

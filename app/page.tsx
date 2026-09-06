@@ -3,6 +3,7 @@
 import {
   Activity,
   BarChart3,
+  Bug,
   Check,
   CircleDot,
   Crosshair,
@@ -61,6 +62,10 @@ type SetupState = {
 type SocketStatus = 'connecting' | 'connected' | 'offline' | 'blocked';
 type HistoryStatus = 'checking' | 'saving' | 'saved' | 'offline';
 type AppView = 'play' | 'stats' | 'board';
+type BoardDetection = {
+  eventId: string;
+  detectedScore: string;
+};
 
 const initialSetup: SetupState = {
   mode: '501',
@@ -106,6 +111,9 @@ export default function Home() {
   const [boardHost, setBoardHost] = useState('');
   const [lastSignal, setLastSignal] = useState('Waiting for board');
   const [manualOpen, setManualOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [lastBoardDetection, setLastBoardDetection] = useState<BoardDetection | null>(null);
+  const [reportStatus, setReportStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [manualMultiplier, setManualMultiplier] = useState<'S' | 'D' | 'T'>('S');
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>('checking');
   const [sessionReady, setSessionReady] = useState(false);
@@ -207,6 +215,7 @@ export default function Home() {
     cameraPosition?: { x: number; y: number },
     boardPosition?: { x: number; y: number },
     occurredAt?: number | string,
+    boardEventId?: string,
   ) => {
     if (token === 'END') {
       commit(endVisit);
@@ -218,6 +227,7 @@ export default function Home() {
     const hit = {
       ...parsedHit,
       inputSource: source.toLowerCase() === 'board' ? 'board' as const : 'manual' as const,
+      ...(boardEventId ? { boardEventId } : {}),
       thrownAt: throwTimestamp(occurredAt),
       ...(cameraPosition
         && Number.isFinite(cameraPosition.x)
@@ -274,6 +284,8 @@ export default function Home() {
             boardPosition?: { x: number; y: number };
             board_position?: { x: number; y: number };
             normalizedPosition?: { x: number; y: number };
+            event_id?: string;
+            eventId?: string;
           };
           if (!payload.score) return;
           const now = Date.now();
@@ -285,7 +297,14 @@ export default function Home() {
           const normalizedPosition = payload.boardPosition
             || payload.board_position
             || payload.normalizedPosition;
-          scoreToken(payload.score.toUpperCase(), 'Board', payload.position, normalizedPosition, payload.timestamp);
+          const eventId = payload.event_id || payload.eventId;
+          const score = payload.score.toUpperCase();
+          if (eventId && score !== 'END') {
+            setLastBoardDetection({ eventId, detectedScore: score });
+            setReportStatus('idle');
+            setReportOpen(false);
+          }
+          scoreToken(score, 'Board', payload.position, normalizedPosition, payload.timestamp, eventId);
         } catch {
           setLastSignal('Ignored an unreadable board message');
         }
@@ -306,6 +325,57 @@ export default function Home() {
     };
   }, [boardHost, scoreToken]);
 
+  const reportDetection = useCallback(async (actualScore: string) => {
+    if (!lastBoardDetection || !boardHost) return;
+    const parsedHit = parseScore(actualScore);
+    if (!parsedHit) return;
+
+    const current = matchRef.current;
+    const previous = history.at(-1);
+    const latest = current?.darts.at(-1);
+    const canCorrectLatest = Boolean(
+      current
+      && previous
+      && latest?.boardEventId === lastBoardDetection.eventId
+      && latest.label !== parsedHit.label,
+    );
+
+    if (canCorrectLatest && current && previous && latest) {
+      const correctedHit = {
+        ...parsedHit,
+        inputSource: 'manual' as const,
+        boardEventId: lastBoardDetection.eventId,
+        thrownAt: latest.thrownAt || new Date().toISOString(),
+      };
+      const corrected = applyHit(previous, correctedHit);
+      matchRef.current = corrected;
+      setMatch(corrected);
+    }
+
+    setReportStatus('saving');
+    try {
+      const response = await fetch(`http://${boardHost}:13520/debug/events/${encodeURIComponent(lastBoardDetection.eventId)}/label`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          actual_score: parsedHit.label,
+          note: `Reported from match console; detector returned ${lastBoardDetection.detectedScore}`,
+        }),
+      });
+      if (!response.ok) throw new Error('Label save failed');
+      setReportStatus('saved');
+      setLastSignal(canCorrectLatest
+        ? `Corrected to ${parsedHit.label}; diagnostic saved`
+        : `Diagnostic labeled ${parsedHit.label}`);
+      setReportOpen(false);
+    } catch {
+      setReportStatus('failed');
+      setLastSignal(canCorrectLatest
+        ? `Corrected to ${parsedHit.label}; diagnostic label failed`
+        : 'Could not label the diagnostic capture');
+    }
+  }, [boardHost, history, lastBoardDetection]);
+
   const startMatch = () => {
     const next = createMatch(setup);
     matchRef.current = next;
@@ -313,6 +383,9 @@ export default function Home() {
     setHistory([]);
     setRestoredMatch(false);
     setManualOpen(false);
+    setReportOpen(false);
+    setLastBoardDetection(null);
+    setReportStatus('idle');
     setView('play');
   };
 
@@ -327,6 +400,9 @@ export default function Home() {
     setRestoredMatch(false);
     window.localStorage.removeItem(MATCH_SESSION_STORAGE_KEY);
     setManualOpen(false);
+    setReportOpen(false);
+    setLastBoardDetection(null);
+    setReportStatus('idle');
   };
 
   const undo = () => {
@@ -407,11 +483,22 @@ export default function Home() {
           manualMultiplier={manualMultiplier}
           manualOpen={manualOpen}
           match={match}
+          lastBoardDetection={lastBoardDetection}
+          reportOpen={reportOpen}
+          reportStatus={reportStatus}
           restored={restoredMatch}
           onManualMultiplier={setManualMultiplier}
-          onManualOpen={() => setManualOpen((open) => !open)}
+          onManualOpen={() => {
+            setReportOpen(false);
+            setManualOpen((open) => !open);
+          }}
           onNewMatch={returnToSetup}
           onScore={scoreToken}
+          onReportOpen={() => {
+            setManualOpen(false);
+            setReportOpen((open) => !open);
+          }}
+          onReportScore={reportDetection}
           onUndo={undo}
         />
       )}
@@ -578,11 +665,16 @@ function MatchScreen({
   manualMultiplier,
   manualOpen,
   match,
+  lastBoardDetection,
+  reportOpen,
+  reportStatus,
   restored,
   onManualMultiplier,
   onManualOpen,
   onNewMatch,
   onScore,
+  onReportOpen,
+  onReportScore,
   onUndo,
 }: {
   boardHost: string;
@@ -590,11 +682,16 @@ function MatchScreen({
   manualMultiplier: 'S' | 'D' | 'T';
   manualOpen: boolean;
   match: MatchState;
+  lastBoardDetection: BoardDetection | null;
+  reportOpen: boolean;
+  reportStatus: 'idle' | 'saving' | 'saved' | 'failed';
   restored: boolean;
   onManualMultiplier: (multiplier: 'S' | 'D' | 'T') => void;
   onManualOpen: () => void;
   onNewMatch: () => void;
   onScore: (token: string, source?: string, cameraPosition?: { x: number; y: number }) => void;
+  onReportOpen: () => void;
+  onReportScore: (token: string) => void;
   onUndo: () => void;
 }) {
   const player = match.players[match.activePlayer];
@@ -641,6 +738,13 @@ function MatchScreen({
           <Button onClick={onManualOpen} variant={manualOpen ? 'secondary' : 'outline'}>
             {manualOpen ? <X /> : <Settings2 />}{manualOpen ? 'Close pad' : 'Correct score'}
           </Button>
+          <Button
+            disabled={!lastBoardDetection || reportStatus === 'saving'}
+            onClick={onReportOpen}
+            variant={reportOpen ? 'secondary' : 'outline'}
+          >
+            <Bug /> {reportStatus === 'saving' ? 'Saving…' : reportOpen ? 'Close report' : 'Report detection'}
+          </Button>
           <Button onClick={onNewMatch} variant="ghost">
             <RotateCcw /> New match
           </Button>
@@ -678,9 +782,21 @@ function MatchScreen({
 
         {manualOpen && match.winner === null && (
           <ManualPad
+            eyebrow="Manual correction"
             multiplier={manualMultiplier}
             onMultiplier={onManualMultiplier}
             onScore={onScore}
+            title="Enter a throw the board did not send."
+          />
+        )}
+
+        {reportOpen && lastBoardDetection && (
+          <ManualPad
+            eyebrow={`Detected ${lastBoardDetection.detectedScore}`}
+            multiplier={manualMultiplier}
+            onMultiplier={onManualMultiplier}
+            onScore={onReportScore}
+            title="What did this dart actually hit?"
           />
         )}
       </section>
@@ -768,20 +884,24 @@ function VisitStrip({ match }: { match: MatchState }) {
 }
 
 function ManualPad({
+  eyebrow,
   multiplier,
   onMultiplier,
   onScore,
+  title,
 }: {
+  eyebrow: string;
   multiplier: 'S' | 'D' | 'T';
   onMultiplier: (multiplier: 'S' | 'D' | 'T') => void;
   onScore: (token: string, source?: string, cameraPosition?: { x: number; y: number }) => void;
+  title: string;
 }) {
   return (
     <div className="manual-pad">
       <div className="manual-pad-heading">
         <div>
-          <p className="eyebrow">Manual correction</p>
-          <h3>Enter the throw the board should have seen.</h3>
+          <p className="eyebrow">{eyebrow}</p>
+          <h3>{title}</h3>
         </div>
         <div className="multiplier-toggle" role="group" aria-label="Multiplier">
           {(['S', 'D', 'T'] as const).map((entry) => (

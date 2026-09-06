@@ -142,6 +142,7 @@ test('preserves canonical position and throw metadata after a visit completes', 
   match = applyHit(match, {
     ...hit('T20'),
     boardPosition: { x: 0.02, y: -0.6 },
+    boardEventId: 'event-1788622930123-1',
     inputSource: 'board',
     thrownAt: '2026-09-05T15:42:10.123Z',
   });
@@ -150,6 +151,7 @@ test('preserves canonical position and throw metadata after a visit completes', 
   assert.deepEqual(match.visits[0].dartDetails[0], {
     ...hit('T20'),
     boardPosition: { x: 0.02, y: -0.6 },
+    boardEventId: 'event-1788622930123-1',
     inputSource: 'board',
     thrownAt: '2026-09-05T15:42:10.123Z',
   });
