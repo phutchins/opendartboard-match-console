@@ -45,6 +45,11 @@ import {
   playerAverage,
   X01Rule,
 } from '@/lib/game-engine';
+import {
+  encodeMatchSession,
+  MATCH_SESSION_STORAGE_KEY,
+  parseMatchSession,
+} from '@/lib/match-session';
 
 type SetupState = {
   mode: GameMode;
@@ -53,7 +58,7 @@ type SetupState = {
   outRule: X01Rule;
 };
 
-type SocketStatus = 'connecting' | 'connected' | 'offline';
+type SocketStatus = 'connecting' | 'connected' | 'offline' | 'blocked';
 type HistoryStatus = 'checking' | 'saving' | 'saved' | 'offline';
 type AppView = 'play' | 'stats' | 'board';
 
@@ -83,6 +88,15 @@ const throwTimestamp = (value?: number | string) => {
   return new Date().toISOString();
 };
 
+const isLocalBoardHost = (host: string) => (
+  host === 'localhost'
+  || host === '127.0.0.1'
+  || host.endsWith('.local')
+  || /^10\./.test(host)
+  || /^192\.168\./.test(host)
+  || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+);
+
 export default function Home() {
   const [setup, setSetup] = useState<SetupState>(initialSetup);
   const [match, setMatch] = useState<MatchState | null>(null);
@@ -94,12 +108,38 @@ export default function Home() {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualMultiplier, setManualMultiplier] = useState<'S' | 'D' | 'T'>('S');
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>('checking');
+  const [sessionReady, setSessionReady] = useState(false);
+  const [restoredMatch, setRestoredMatch] = useState(false);
+  const [secureScoringBlocked, setSecureScoringBlocked] = useState(false);
   const matchRef = useRef<MatchState | null>(null);
   const lastMessageRef = useRef({ key: '', receivedAt: 0 });
 
   useEffect(() => {
     matchRef.current = match;
   }, [match]);
+
+  useEffect(() => {
+    const restored = parseMatchSession(window.localStorage.getItem(MATCH_SESSION_STORAGE_KEY));
+    if (restored) {
+      matchRef.current = restored.match;
+      setMatch(restored.match);
+      setHistory(restored.history);
+      setSetup(restored.match.config);
+      setView('play');
+      setRestoredMatch(true);
+      setLastSignal('Match restored after refresh');
+    }
+    setSessionReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionReady) return;
+    if (match && match.status !== 'abandoned') {
+      window.localStorage.setItem(MATCH_SESSION_STORAGE_KEY, encodeMatchSession(match, history));
+    } else {
+      window.localStorage.removeItem(MATCH_SESSION_STORAGE_KEY);
+    }
+  }, [history, match, sessionReady]);
 
   useEffect(() => {
     const savedHost = window.localStorage.getItem('opendartboard-host')?.trim();
@@ -198,10 +238,26 @@ export default function Home() {
 
     const resolvedHost = boardHost;
 
+    if (window.location.protocol === 'https:') {
+      setSecureScoringBlocked(true);
+      setSocketStatus('blocked');
+      setLastSignal('Open the LAN console for live scoring');
+      return;
+    }
+
+    setSecureScoringBlocked(false);
+
     const connect = () => {
       if (!active) return;
       setSocketStatus('connecting');
-      websocket = new WebSocket(`ws://${resolvedHost}:13520/scores`);
+      try {
+        websocket = new WebSocket(`ws://${resolvedHost}:13520/scores`);
+      } catch {
+        setSocketStatus('offline');
+        setLastSignal('Could not open the board connection');
+        retryTimer = setTimeout(connect, 2000);
+        return;
+      }
 
       websocket.onopen = () => {
         if (!active) return;
@@ -255,6 +311,7 @@ export default function Home() {
     matchRef.current = next;
     setMatch(next);
     setHistory([]);
+    setRestoredMatch(false);
     setManualOpen(false);
     setView('play');
   };
@@ -267,6 +324,8 @@ export default function Home() {
     setMatch(null);
     matchRef.current = null;
     setHistory([]);
+    setRestoredMatch(false);
+    window.localStorage.removeItem(MATCH_SESSION_STORAGE_KEY);
     setManualOpen(false);
   };
 
@@ -309,11 +368,26 @@ export default function Home() {
           </div>
           <span className="last-signal">{lastSignal}</span>
           <Badge className={`status-pill status-${socketStatus}`} variant="outline">
-            {socketStatus === 'offline' ? <WifiOff className="size-3.5" /> : <Radio className="size-3.5" />}
-            {socketStatus === 'connected' ? 'Live' : socketStatus === 'connecting' ? 'Connecting' : 'Board offline'}
+            {socketStatus === 'offline' || socketStatus === 'blocked' ? <WifiOff className="size-3.5" /> : <Radio className="size-3.5" />}
+            {socketStatus === 'connected' ? 'Live' : socketStatus === 'connecting' ? 'Connecting' : socketStatus === 'blocked' ? 'Use LAN app' : 'Board offline'}
           </Badge>
         </div>
       </header>
+
+      {secureScoringBlocked && boardHost && (
+        <aside className="secure-scoring-alert" role="alert">
+          <WifiOff />
+          <div>
+            <strong>Live scoring needs the local console</strong>
+            <span>This hosted HTTPS copy cannot open the Nano&apos;s local WebSocket.</span>
+          </div>
+          {isLocalBoardHost(boardHost) ? (
+            <a href={`http://${boardHost}:8090/`}>Open {boardHost}:8090</a>
+          ) : (
+            <button onClick={() => setView('board')} type="button">Set board address</button>
+          )}
+        </aside>
+      )}
 
       {view === 'board' ? (
         <BoardAdmin boardHost={boardHost} onBoardHost={updateBoardHost} />
@@ -333,6 +407,7 @@ export default function Home() {
           manualMultiplier={manualMultiplier}
           manualOpen={manualOpen}
           match={match}
+          restored={restoredMatch}
           onManualMultiplier={setManualMultiplier}
           onManualOpen={() => setManualOpen((open) => !open)}
           onNewMatch={returnToSetup}
@@ -503,6 +578,7 @@ function MatchScreen({
   manualMultiplier,
   manualOpen,
   match,
+  restored,
   onManualMultiplier,
   onManualOpen,
   onNewMatch,
@@ -514,6 +590,7 @@ function MatchScreen({
   manualMultiplier: 'S' | 'D' | 'T';
   manualOpen: boolean;
   match: MatchState;
+  restored: boolean;
   onManualMultiplier: (multiplier: 'S' | 'D' | 'T') => void;
   onManualOpen: () => void;
   onNewMatch: () => void;
@@ -536,6 +613,13 @@ function MatchScreen({
           </div>
           <Badge variant="outline">Leg 1</Badge>
         </div>
+
+        {restored && (
+          <div className="match-restored" role="status">
+            <RotateCcw />
+            <div><strong>Match restored</strong><span>Your game was recovered after refresh.</span></div>
+          </div>
+        )}
 
         <div className="player-stack">
           {match.players.map((entry, index) => (

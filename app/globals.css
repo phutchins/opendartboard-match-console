@@ -136,7 +136,7 @@ body {
   color: #d8ff49;
   background: rgba(216, 255, 73, 0.07);
 }
-.status-offline { color: #ff8b69; border-color: rgba(255,107,61,.35); background: rgba(255,107,61,.08); }
+.status-offline, .status-blocked { color: #ff8b69; border-color: rgba(255,107,61,.35); background: rgba(255,107,61,.08); }
 .status-connecting { color: #d4c8b8; border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.04); }
 .status-connected svg { animation: pulse-status 1.8s ease-in-out infinite; }
 
@@ -476,6 +476,17 @@ body {
 .camera-capability.is-full strong, .camera-capability.is-ring strong { color: var(--primary); }
 .camera-capability.is-ring strong { color: #c9e875; }
 .camera-status-list svg { width: .85rem; }
+.secure-scoring-alert { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .8rem; margin: .8rem max(1rem, calc((100vw - 1520px) / 2)); padding: .75rem .9rem; border: 1px solid rgba(255,139,105,.35); border-radius: .75rem; background: rgba(255,139,105,.08); color: #ffb39d; }
+.secure-scoring-alert > svg { width: 1.1rem; }
+.secure-scoring-alert div { display: grid; gap: .12rem; }
+.secure-scoring-alert strong { font-size: .75rem; }
+.secure-scoring-alert span { color: #a9b3b7; font-size: .66rem; }
+.secure-scoring-alert a, .secure-scoring-alert button { padding: .46rem .68rem; border: 0; border-radius: .55rem; background: #ffb39d; color: #101415; font-size: .68rem; font-weight: 800; white-space: nowrap; cursor: pointer; }
+.match-restored { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .55rem; margin-bottom: .8rem; padding: .6rem .65rem; border: 1px solid rgba(204,255,56,.2); border-radius: .65rem; background: rgba(204,255,56,.06); }
+.match-restored > svg { width: .9rem; color: var(--primary); }
+.match-restored div { display: grid; gap: .08rem; }
+.match-restored strong { color: var(--primary); font-size: .68rem; }
+.match-restored span { color: #849096; font-size: .6rem; }
 .board-action-stack { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
 .board-action-stack button { min-height: 2.55rem; }
 .board-host-setting { margin-top: 1.1rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,.07); }
@@ -489,6 +500,8 @@ body {
 .is-spinning { animation: spin 1s linear infinite; }
 
 @media (max-width: 680px) {
+  .secure-scoring-alert { grid-template-columns: auto 1fr; }
+  .secure-scoring-alert a, .secure-scoring-alert button { grid-column: 1 / -1; text-align: center; }
   .app-header { align-items: flex-start; }
   .header-status { align-items: flex-end; flex-direction: column-reverse; }
   .app-header { flex-wrap: wrap; }

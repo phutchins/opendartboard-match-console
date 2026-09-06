@@ -36,7 +36,7 @@ Board operations do **not** expose SSH, Docker, sudo, or host credentials to Jav
 ```bash
 npm install
 npm run build
-node --experimental-strip-types --test tests/game-engine.test.ts tests/heatmap.test.ts
+node --experimental-strip-types --test tests/game-engine.test.ts tests/heatmap.test.ts tests/match-session.test.ts
 python3 -m unittest tests/test_server.py tests/test_board_control.py
 ```
 
