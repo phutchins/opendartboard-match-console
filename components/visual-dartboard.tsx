@@ -38,12 +38,6 @@ export function VisualDartboard({ darts, embedded = false }: { darts: ParsedHit[
             </>
           )}
         </DartboardFace>
-        {!darts.length && (
-          <div className="empty-board-callout">
-            <span>Ready</span>
-            <small>First dart will appear here</small>
-          </div>
-        )}
       </div>
 
       <div className="board-dart-legend" aria-label="Current dart list">

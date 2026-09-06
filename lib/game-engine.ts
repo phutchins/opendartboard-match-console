@@ -22,6 +22,8 @@ export type ParsedHit = {
 
 export type PlayerState = {
   id: string;
+  profileId?: string;
+  email?: string | null;
   name: string;
   score: number;
   opened: boolean;
@@ -47,6 +49,7 @@ export type VisitRecord = {
 export type MatchConfig = {
   mode: GameMode;
   players: string[];
+  playerProfiles?: Array<{ id: string; name: string; email?: string | null }>;
   inRule: X01Rule;
   outRule: X01Rule;
 };
@@ -88,6 +91,10 @@ export function createMatch(config: MatchConfig): MatchState {
 
   const players = (names.length ? names : ['Player 1']).map((name, index) => ({
     id: `player-${index + 1}`,
+    ...(config.playerProfiles?.[index]?.id
+      ? { profileId: config.playerProfiles[index].id }
+      : {}),
+    email: config.playerProfiles?.[index]?.email || null,
     name,
     score: startingScore,
     opened: config.mode === 'cricket' || config.inRule === 'straight',

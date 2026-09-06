@@ -35,7 +35,8 @@ printf 'OPENDARTBOARD_MOTION_PRETRIGGER_ACTIVITY_RATIO="%s"\n' "$motion_pretrigg
 sudo install -m 0644 "$environment_file" "$control_environment"
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now opendartboard-control.service
+sudo systemctl enable opendartboard-control.service
+sudo systemctl restart opendartboard-control.service
 
 if ! sudo docker network inspect "$network_name" >/dev/null 2>&1; then
   sudo docker network create "$network_name" >/dev/null

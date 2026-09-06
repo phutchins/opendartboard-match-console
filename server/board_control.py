@@ -393,6 +393,30 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_calibration_overlay(self, camera):
+        if camera not in range(len(CAMERAS)):
+            self.send_json(404, {"error": "Calibration overlay not found"})
+            return
+        path = os.path.join(
+            DATA_DIR,
+            "debug_frames",
+            "geometry_calibration",
+            "calibration_camera_{}.jpg".format(camera),
+        )
+        try:
+            with open(path, "rb") as overlay:
+                data = overlay.read()
+        except OSError:
+            self.send_json(404, {"error": "Calibration overlay not available yet"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
     def read_json(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -427,6 +451,10 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/")
+        overlay_match = re.fullmatch(r"/api/control/v1/calibration/overlays/([0-2])", path)
+        if overlay_match:
+            self.send_calibration_overlay(int(overlay_match.group(1)))
+            return
         if path != "/api/control/v1/status":
             self.send_json(404, {"error": "Not found"})
             return

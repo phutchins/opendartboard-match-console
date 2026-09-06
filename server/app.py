@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,8 @@ VALID_RULES = {"straight", "double"}
 VALID_PERIODS = {"7d": 7, "30d": 30, "90d": 90, "1y": 365, "all": None}
 SCORE_PATTERN = re.compile(r"^(?:MISS|BULL|OUTER|[SDT](?:[1-9]|1[0-9]|20))$")
 INPUT_SOURCES = {"board", "manual", "unknown", "legacy"}
+PROFILE_ID_PATTERN = re.compile(r"^[a-f0-9-]{32,36}$")
+EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def utc_now():
@@ -21,6 +24,15 @@ def utc_now():
 
 def normalized_name(name):
     return " ".join(name.strip().lower().split())
+
+
+def clean_email(value):
+    email = str(value or "").strip().lower()[:254]
+    if not email:
+        return None
+    if not EMAIL_PATTERN.match(email):
+        raise ValueError("Enter a valid email address")
+    return email
 
 
 def safe_int(value, minimum=0, maximum=1_000_000):
@@ -101,8 +113,11 @@ class StatsDatabase:
                 """
                 CREATE TABLE IF NOT EXISTS players (
                     id INTEGER PRIMARY KEY,
+                    public_id TEXT,
                     name TEXT NOT NULL,
                     normalized_name TEXT NOT NULL UNIQUE,
+                    email TEXT,
+                    normalized_email TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -177,9 +192,34 @@ class StatsDatabase:
                 ON dart_throws(match_id, player_id);
                 """
             )
+            self.ensure_profile_schema(connection)
             self.backfill_legacy_darts(connection)
             connection.execute("PRAGMA user_version = 2")
             connection.execute("PRAGMA optimize")
+
+    @staticmethod
+    def ensure_profile_schema(connection):
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(players)").fetchall()
+        }
+        if "public_id" not in columns:
+            connection.execute("ALTER TABLE players ADD COLUMN public_id TEXT")
+        if "email" not in columns:
+            connection.execute("ALTER TABLE players ADD COLUMN email TEXT")
+        if "normalized_email" not in columns:
+            connection.execute("ALTER TABLE players ADD COLUMN normalized_email TEXT")
+        for row in connection.execute("SELECT id FROM players WHERE public_id IS NULL OR public_id = ''"):
+            connection.execute(
+                "UPDATE players SET public_id = ? WHERE id = ?",
+                (str(uuid.uuid4()), row["id"]),
+            )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_public_id ON players(public_id)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_normalized_email "
+            "ON players(normalized_email) WHERE normalized_email IS NOT NULL"
+        )
 
     def backup_legacy_database(self):
         if not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
@@ -270,6 +310,12 @@ class StatsDatabase:
             seen_names.add(key)
             clean_players.append({**player, "name": name, "key": key})
 
+            profile_id = str((player or {}).get("profileId") or "").strip().lower()
+            if profile_id and not PROFILE_ID_PATTERN.match(profile_id):
+                raise ValueError("Invalid player profile id")
+            clean_players[-1]["profile_id"] = profile_id or None
+            clean_players[-1]["email"] = clean_email((player or {}).get("email"))
+
         visits = payload.get("visits") or []
         if not isinstance(visits, list) or len(visits) > 1000:
             raise ValueError("Invalid visit history")
@@ -299,20 +345,50 @@ class StatsDatabase:
             connection.execute("BEGIN IMMEDIATE")
             player_ids = []
             for player in match["players"]:
-                connection.execute(
-                    """
-                    INSERT INTO players(name, normalized_name, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(normalized_name) DO UPDATE SET
-                        name = excluded.name,
-                        updated_at = excluded.updated_at
-                    """,
-                    (player["name"], player["key"], now, now),
-                )
-                row = connection.execute(
-                    "SELECT id FROM players WHERE normalized_name = ?",
-                    (player["key"],),
-                ).fetchone()
+                row = None
+                if player["profile_id"]:
+                    row = connection.execute(
+                        "SELECT id FROM players WHERE public_id = ?",
+                        (player["profile_id"],),
+                    ).fetchone()
+                if row:
+                    connection.execute(
+                        """
+                        UPDATE players
+                        SET name = ?, normalized_name = ?,
+                            email = COALESCE(?, email),
+                            normalized_email = COALESCE(?, normalized_email),
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            player["name"], player["key"], player["email"],
+                            player["email"], now, row["id"],
+                        ),
+                    )
+                else:
+                    public_id = player["profile_id"] or str(uuid.uuid4())
+                    connection.execute(
+                        """
+                        INSERT INTO players(
+                            public_id, name, normalized_name, email,
+                            normalized_email, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(normalized_name) DO UPDATE SET
+                            name = excluded.name,
+                            email = COALESCE(excluded.email, players.email),
+                            normalized_email = COALESCE(excluded.normalized_email, players.normalized_email),
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            public_id, player["name"], player["key"], player["email"],
+                            player["email"], now, now,
+                        ),
+                    )
+                    row = connection.execute(
+                        "SELECT id FROM players WHERE normalized_name = ?",
+                        (player["key"],),
+                    ).fetchone()
                 player_ids.append(row["id"])
 
             winner_index = match["winner"]
@@ -416,6 +492,96 @@ class StatsDatabase:
             connection.commit()
         return {"ok": True, "matchId": match["id"], "savedAt": now}
 
+    def profiles(self):
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.public_id, p.name, p.email, p.updated_at,
+                       COUNT(CASE WHEN m.status = 'completed' THEN 1 END) AS games,
+                       MAX(CASE WHEN m.status = 'completed' THEN m.completed_at END) AS last_played
+                FROM players p
+                LEFT JOIN match_players mp ON mp.player_id = p.id
+                LEFT JOIN matches m ON m.id = mp.match_id
+                GROUP BY p.id, p.public_id, p.name, p.email, p.updated_at
+                ORDER BY last_played DESC, p.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [
+            {
+                "id": row["public_id"],
+                "name": row["name"],
+                "email": row["email"],
+                "games": row["games"] or 0,
+                "lastPlayed": row["last_played"],
+            }
+            for row in rows
+        ]
+
+    def save_profile(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Player profile must be an object")
+        name = str(payload.get("name") or "").strip()[:50]
+        if not name:
+            raise ValueError("Player name is required")
+        key = normalized_name(name)
+        email = clean_email(payload.get("email"))
+        profile_id = str(payload.get("id") or "").strip().lower()
+        if profile_id and not PROFILE_ID_PATTERN.match(profile_id):
+            raise ValueError("Invalid player profile id")
+        now = utc_now()
+
+        try:
+            with self.connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = None
+                if profile_id:
+                    row = connection.execute(
+                        "SELECT id FROM players WHERE public_id = ?", (profile_id,),
+                    ).fetchone()
+                    if not row:
+                        raise ValueError("Player profile not found")
+                elif email:
+                    row = connection.execute(
+                        "SELECT id, public_id FROM players WHERE normalized_email = ?", (email,),
+                    ).fetchone()
+                    if row:
+                        profile_id = row["public_id"]
+                if not row:
+                    row = connection.execute(
+                        "SELECT id, public_id FROM players WHERE normalized_name = ?", (key,),
+                    ).fetchone()
+                    if row:
+                        profile_id = row["public_id"]
+
+                if row:
+                    connection.execute(
+                        """
+                        UPDATE players
+                        SET name = ?, normalized_name = ?, email = ?,
+                            normalized_email = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (name, key, email, email, now, row["id"]),
+                    )
+                else:
+                    profile_id = str(uuid.uuid4())
+                    connection.execute(
+                        """
+                        INSERT INTO players(
+                            public_id, name, normalized_name, email,
+                            normalized_email, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (profile_id, name, key, email, email, now, now),
+                    )
+                connection.commit()
+        except sqlite3.IntegrityError as error:
+            if "normalized_email" in str(error):
+                raise ValueError("That email belongs to another player") from error
+            raise ValueError("That player name is already in use") from error
+
+        return next(profile for profile in self.profiles() if profile["id"] == profile_id)
+
     def heatmap(self, player_id, period="30d", now=None):
         if period not in VALID_PERIODS:
             raise ValueError("Invalid heatmap period")
@@ -503,7 +669,9 @@ class StatsDatabase:
                 """
                 SELECT
                     p.id,
+                    p.public_id,
                     p.name,
+                    p.email,
                     COUNT(*) AS games,
                     SUM(CASE WHEN mp.outcome = 'win' THEN 1 ELSE 0 END) AS wins,
                     SUM(CASE WHEN m.mode IN ('301', '501') THEN mp.darts_thrown ELSE 0 END) AS x01_darts,
@@ -551,7 +719,9 @@ class StatsDatabase:
             wins = row["wins"] or 0
             players.append({
                 "id": row["id"],
+                "profileId": row["public_id"],
                 "name": row["name"],
+                "email": row["email"],
                 "games": games,
                 "wins": wins,
                 "winRate": round(wins * 100 / games, 1) if games else 0,
@@ -623,6 +793,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/api/stats":
             self.send_json(200, self.database.stats())
             return
+        if path == "/api/players":
+            self.send_json(200, {"players": self.database.profiles()})
+            return
         if path == "/api/heatmap":
             try:
                 query = parse_qs(parsed_url.query)
@@ -638,6 +811,14 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/")
+        if path == "/api/players":
+            try:
+                self.send_json(200, {"player": self.database.save_profile(self.read_json())})
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(400, {"error": str(error)})
+            except sqlite3.Error:
+                self.send_json(500, {"error": "Could not save player profile"})
+            return
         if path != "/api/matches/sync":
             self.send_json(404, {"error": "Not found"})
             return

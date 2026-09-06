@@ -95,6 +95,40 @@ class StatsDatabaseTests(unittest.TestCase):
         self.assertEqual(stats["overview"]["games"], 0)
         self.assertEqual(stats["players"], [])
 
+    def test_player_profiles_are_shared_and_keep_optional_email(self):
+        profile = self.database.save_profile({
+            "name": "Alice Example",
+            "email": "ALICE@example.com",
+        })
+
+        self.assertEqual(profile["name"], "Alice Example")
+        self.assertEqual(profile["email"], "alice@example.com")
+        self.assertEqual(len(profile["id"]), 36)
+        self.assertEqual(self.database.profiles()[0]["id"], profile["id"])
+
+        updated = self.database.save_profile({
+            "id": profile["id"],
+            "name": "Alice E.",
+            "email": "alice@example.com",
+        })
+        self.assertEqual(updated["name"], "Alice E.")
+        self.assertEqual(len(self.database.profiles()), 1)
+
+    def test_player_profile_rejects_invalid_email(self):
+        with self.assertRaisesRegex(ValueError, "valid email"):
+            self.database.save_profile({"name": "Alice", "email": "not-an-email"})
+
+    def test_match_sync_uses_stable_profile_identity(self):
+        profile = self.database.save_profile({"name": "Alice", "email": "alice@example.com"})
+        payload = completed_match()
+        payload["players"][0]["profileId"] = profile["id"]
+        payload["players"][0]["email"] = profile["email"]
+        self.database.sync_match(payload)
+
+        players = self.database.profiles()
+        alice = next(player for player in players if player["id"] == profile["id"])
+        self.assertEqual(alice["games"], 1)
+
     def test_structured_darts_power_exact_and_estimated_heatmap_data(self):
         payload = completed_match()
         payload["visits"][0]["darts"] = ["T20", "S16", "MISS"]

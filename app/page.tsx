@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  Activity,
   BarChart3,
   Bug,
   Check,
@@ -9,14 +8,11 @@ import {
   Crosshair,
   Database,
   LoaderCircle,
-  Minus,
-  Plus,
   Radio,
   RotateCcw,
   Settings2,
   Trophy,
   Undo2,
-  Users,
   WifiOff,
   Wrench,
   X,
@@ -26,13 +22,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { BoardAdmin } from '@/components/board-admin';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { GameDetails, GameLobby } from '@/components/game-lobby';
 import { MatchDartboard } from '@/components/match-dartboard';
 import { StatsDashboard } from '@/components/stats-dashboard';
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from '@/components/ui/native-select';
 import {
   applyHit,
   checkoutSuggestion,
@@ -51,10 +43,15 @@ import {
   MATCH_SESSION_STORAGE_KEY,
   parseMatchSession,
 } from '@/lib/match-session';
+import {
+  parsePlayerSelection,
+  PLAYER_SELECTION_STORAGE_KEY,
+  PlayerProfile,
+  reconcilePlayerSelection,
+} from '@/lib/player-profiles';
 
 type SetupState = {
   mode: GameMode;
-  players: string[];
   inRule: X01Rule;
   outRule: X01Rule;
 };
@@ -69,15 +66,8 @@ type BoardDetection = {
 
 const initialSetup: SetupState = {
   mode: '501',
-  players: ['Player 1', 'Player 2'],
   inRule: 'straight',
   outRule: 'double',
-};
-
-const modeDescriptions: Record<GameMode, string> = {
-  '501': 'Classic',
-  '301': 'Quick leg',
-  cricket: '15–Bull',
 };
 
 const throwTimestamp = (value?: number | string) => {
@@ -97,13 +87,18 @@ const isLocalBoardHost = (host: string) => (
   host === 'localhost'
   || host === '127.0.0.1'
   || host.endsWith('.local')
-  || /^10\./.test(host)
-  || /^192\.168\./.test(host)
+  || host.startsWith('10.')
+  || host.startsWith('192.168.')
   || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
 );
 
 export default function Home() {
   const [setup, setSetup] = useState<SetupState>(initialSetup);
+  const [playStep, setPlayStep] = useState<'lobby' | 'details'>('lobby');
+  const [profiles, setProfiles] = useState<PlayerProfile[]>([]);
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [match, setMatch] = useState<MatchState | null>(null);
   const [view, setView] = useState<AppView>('play');
   const [history, setHistory] = useState<MatchState[]>([]);
@@ -132,13 +127,45 @@ export default function Home() {
       matchRef.current = restored.match;
       setMatch(restored.match);
       setHistory(restored.history);
-      setSetup(restored.match.config);
+      setSetup({
+        mode: restored.match.config.mode,
+        inRule: restored.match.config.inRule,
+        outRule: restored.match.config.outRule,
+      });
       setView('play');
       setRestoredMatch(true);
       setLastSignal('Match restored after refresh');
     }
     setSessionReady(true);
   }, []);
+
+  const loadProfiles = useCallback(async () => {
+    setProfilesLoading(true);
+    try {
+      const response = await fetch('/api/players', { cache: 'no-store' });
+      const payload = await response.json() as { players?: PlayerProfile[]; error?: string };
+      if (!response.ok || !Array.isArray(payload.players)) {
+        throw new Error(payload.error || 'Player profiles are unavailable');
+      }
+      setProfiles(payload.players);
+      const savedIds = parsePlayerSelection(window.localStorage.getItem(PLAYER_SELECTION_STORAGE_KEY));
+      setSelectedPlayerIds(reconcilePlayerSelection(savedIds, payload.players));
+      setProfileError(null);
+    } catch (caught) {
+      setProfileError(caught instanceof Error ? caught.message : 'Could not load player profiles');
+    } finally {
+      setProfilesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
+
+  useEffect(() => {
+    if (profilesLoading) return;
+    window.localStorage.setItem(PLAYER_SELECTION_STORAGE_KEY, JSON.stringify(selectedPlayerIds));
+  }, [profilesLoading, selectedPlayerIds]);
 
   useEffect(() => {
     if (!sessionReady) return;
@@ -376,8 +403,58 @@ export default function Home() {
     }
   }, [boardHost, history, lastBoardDetection]);
 
+  const selectedPlayers = selectedPlayerIds
+    .map((id) => profiles.find((profile) => profile.id === id))
+    .filter((profile): profile is PlayerProfile => Boolean(profile));
+
+  const togglePlayer = (id: string) => {
+    setSelectedPlayerIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= 4) return current;
+      return [...current, id];
+    });
+  };
+
+  const saveProfile = useCallback(async (profile: { id?: string; name: string; email: string }) => {
+    setProfileError(null);
+    const response = await fetch('/api/players', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    const payload = await response.json() as { player?: PlayerProfile; error?: string };
+    if (!response.ok || !payload.player) {
+      const message = payload.error || 'Could not save player';
+      setProfileError(message);
+      throw new Error(message);
+    }
+    setProfiles((current) => {
+      const remaining = current.filter((item) => item.id !== payload.player!.id);
+      return [payload.player!, ...remaining];
+    });
+    setSelectedPlayerIds((current) => (
+      current.includes(payload.player!.id) || current.length >= 4
+        ? current
+        : [...current, payload.player!.id]
+    ));
+  }, []);
+
+  const chooseGame = (mode: GameMode) => {
+    setSetup((current) => ({ ...current, mode }));
+    setPlayStep('details');
+  };
+
   const startMatch = () => {
-    const next = createMatch(setup);
+    if (!selectedPlayers.length) return;
+    const next = createMatch({
+      ...setup,
+      players: selectedPlayers.map((player) => player.name),
+      playerProfiles: selectedPlayers.map((player) => ({
+        id: player.id,
+        name: player.name,
+        email: player.email,
+      })),
+    });
     matchRef.current = next;
     setMatch(next);
     setHistory([]);
@@ -389,7 +466,7 @@ export default function Home() {
     setView('play');
   };
 
-  const returnToSetup = () => {
+  const returnToLobby = () => {
     const current = matchRef.current;
     if (current?.status === 'active') {
       void persistMatch({ ...current, status: 'abandoned' }, true);
@@ -403,6 +480,8 @@ export default function Home() {
     setReportOpen(false);
     setLastBoardDetection(null);
     setReportStatus('idle');
+    setPlayStep('lobby');
+    void loadProfiles();
   };
 
   const undo = () => {
@@ -428,7 +507,7 @@ export default function Home() {
         </div>
         <nav className="app-nav" aria-label="Primary navigation">
           <button className={view === 'play' ? 'is-active' : ''} onClick={() => setView('play')} type="button">
-            <CircleDot /> Play
+            <CircleDot /> {match?.status === 'active' && view !== 'play' ? 'Resume' : 'Play'}
           </button>
           <button className={view === 'stats' ? 'is-active' : ''} onClick={() => setView('stats')} type="button">
             <BarChart3 /> Stats
@@ -469,14 +548,7 @@ export default function Home() {
         <BoardAdmin boardHost={boardHost} onBoardHost={updateBoardHost} />
       ) : view === 'stats' ? (
         <StatsDashboard onPlay={() => setView('play')} />
-      ) : !match ? (
-        <SetupScreen
-          boardHost={boardHost}
-          setup={setup}
-          setSetup={setSetup}
-          startMatch={startMatch}
-        />
-      ) : (
+      ) : match ? (
         <MatchScreen
           boardHost={boardHost}
           historyCount={history.length}
@@ -492,7 +564,7 @@ export default function Home() {
             setReportOpen(false);
             setManualOpen((open) => !open);
           }}
-          onNewMatch={returnToSetup}
+          onNewMatch={returnToLobby}
           onScore={scoreToken}
           onReportOpen={() => {
             setManualOpen(false);
@@ -501,161 +573,27 @@ export default function Home() {
           onReportScore={reportDetection}
           onUndo={undo}
         />
+      ) : playStep === 'details' ? (
+        <GameDetails
+          boardHost={boardHost}
+          onBack={() => setPlayStep('lobby')}
+          onChange={(change) => setSetup((current) => ({ ...current, ...change }))}
+          onStart={startMatch}
+          selectedPlayers={selectedPlayers}
+          setup={setup}
+        />
+      ) : (
+        <GameLobby
+          onChooseGame={chooseGame}
+          onSaveProfile={saveProfile}
+          onTogglePlayer={togglePlayer}
+          profileError={profileError}
+          profiles={profiles}
+          profilesLoading={profilesLoading}
+          selectedIds={selectedPlayerIds}
+        />
       )}
     </main>
-  );
-}
-
-function SetupScreen({
-  boardHost,
-  setup,
-  setSetup,
-  startMatch,
-}: {
-  boardHost: string;
-  setup: SetupState;
-  setSetup: React.Dispatch<React.SetStateAction<SetupState>>;
-  startMatch: () => void;
-}) {
-  const updatePlayer = (index: number, name: string) => {
-    setSetup((current) => ({
-      ...current,
-      players: current.players.map((player, playerIndex) => playerIndex === index ? name : player),
-    }));
-  };
-
-  return (
-    <section className="app-grid setup-grid">
-      <section className="control-panel">
-        <div className="section-heading">
-          <span className="section-icon"><Activity /></span>
-          <div>
-            <p className="eyebrow">New match</p>
-            <h1>Set the oche.</h1>
-          </div>
-        </div>
-
-        <div className="field-block">
-          <p className="field-label">Game</p>
-          <div className="mode-grid" role="group" aria-label="Game mode">
-            {(['501', '301', 'cricket'] as GameMode[]).map((mode) => (
-              <button
-                className={`mode-button ${setup.mode === mode ? 'is-active' : ''}`}
-                key={mode}
-                onClick={() => setSetup((current) => ({ ...current, mode }))}
-                type="button"
-              >
-                <strong>{mode === 'cricket' ? 'Cricket' : mode}</strong>
-                <span>{modeDescriptions[mode]}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="field-block">
-          <div className="field-label-row">
-            <p className="field-label">Players</p>
-            <span>{setup.players.length} of 4 local</span>
-          </div>
-          <div className="player-list">
-            {setup.players.map((player, index) => (
-              <div className="player-inputs" key={index}>
-                <div className="player-number">{String(index + 1).padStart(2, '0')}</div>
-                <Input
-                  aria-label={`Player ${index + 1} name`}
-                  onChange={(event) => updatePlayer(index, event.target.value)}
-                  value={player}
-                />
-                <Button
-                  aria-label={`Remove player ${index + 1}`}
-                  disabled={setup.players.length === 1}
-                  onClick={() => setSetup((current) => ({
-                    ...current,
-                    players: current.players.filter((_, playerIndex) => playerIndex !== index),
-                  }))}
-                  size="icon"
-                  type="button"
-                  variant="outline"
-                >
-                  <Minus />
-                </Button>
-              </div>
-            ))}
-          </div>
-          {setup.players.length < 4 && (
-            <Button
-              className="add-player-button"
-              onClick={() => setSetup((current) => ({
-                ...current,
-                players: [...current.players, `Player ${current.players.length + 1}`],
-              }))}
-              type="button"
-              variant="ghost"
-            >
-              <Plus /> Add player
-            </Button>
-          )}
-        </div>
-
-        {setup.mode !== 'cricket' && (
-          <div className="settings-row">
-            <div>
-              <label htmlFor="in-rule">Start</label>
-              <NativeSelect
-                id="in-rule"
-                onChange={(event) => setSetup((current) => ({
-                  ...current,
-                  inRule: event.target.value as X01Rule,
-                }))}
-                value={setup.inRule}
-              >
-                <NativeSelectOption value="straight">Straight in</NativeSelectOption>
-                <NativeSelectOption value="double">Double in</NativeSelectOption>
-              </NativeSelect>
-            </div>
-            <div>
-              <label htmlFor="out-rule">Finish</label>
-              <NativeSelect
-                id="out-rule"
-                onChange={(event) => setSetup((current) => ({
-                  ...current,
-                  outRule: event.target.value as X01Rule,
-                }))}
-                value={setup.outRule}
-              >
-                <NativeSelectOption value="double">Double out</NativeSelectOption>
-                <NativeSelectOption value="straight">Straight out</NativeSelectOption>
-              </NativeSelect>
-            </div>
-          </div>
-        )}
-
-        <Button className="start-button" onClick={startMatch} size="lg">
-          <Users /> Start match
-        </Button>
-      </section>
-
-      <section className="score-panel setup-preview" aria-label="Game preview">
-        <div className="score-panel-top">
-          <div>
-            <p className="eyebrow">Local automatic scoring</p>
-            <h2>Your board. Your game.</h2>
-          </div>
-          <div className="board-address">{boardHost}:13520</div>
-        </div>
-        <div className="preview-stage">
-          <div className="preview-target" aria-hidden="true">
-            <CircleDot />
-          </div>
-          <p className="preview-kicker">Ready at the oche</p>
-          <h2>{setup.mode === 'cricket' ? 'Cricket' : setup.mode}</h2>
-          <p>Choose your players, start the match, and throws will score here as OpenDartboard sees them.</p>
-          <div className="preview-tags">
-            <span>Live throws</span><span>Undo</span><span>Manual correction</span>
-          </div>
-        </div>
-      </section>
-    </section>
   );
 }
 

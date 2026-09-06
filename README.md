@@ -7,12 +7,14 @@ A local-first game client and board operations console for [OpenDartboard](https
 ## What it does
 
 - Plays 301, 501, and Cricket with one to four local players
+- Keeps a reusable player lineup with optional email-backed profiles shared by browsers on the same board
 - Receives throws from OpenDartboard's WebSocket API
 - Shows the live visit, averages, checkouts, and darts currently in the board
 - Builds an in-game heat map for every player and historical maps over 7, 30, or 90 days, one year, or all time
 - Supports undo and manual score correction
 - Stores match history, player averages, win rates, and high visits in SQLite
-- Shows calibration health and individual camera orientation
+- Shows calibration health, camera scoring roles, and the latest visual overlay from every camera
+- Restores an active match after refresh and exposes a Resume action after visiting Stats or Board
 - Recalibrates or restarts OpenDartboard from the client
 - Enables diagnostic streams and switches between local/stable scorer images
 - Transfers camera ownership safely between OpenDartboard and Autodarts
@@ -36,7 +38,7 @@ Board operations do **not** expose SSH, Docker, sudo, or host credentials to Jav
 ```bash
 npm install
 npm run build
-node --experimental-strip-types --test tests/game-engine.test.ts tests/heatmap.test.ts tests/match-session.test.ts
+node --experimental-strip-types --test tests/*.test.ts
 python3 -m unittest tests/test_server.py tests/test_board_control.py
 ```
 
@@ -53,6 +55,8 @@ The installer uses the invoking user's `~/.local/share/opendartboard` directory 
 Open `http://<board-host>:8090/`. The scoring host is detected from the page hostname and can be changed on the **Board** screen. The installer preserves the SQLite data directory and does not modify the upstream scorer image.
 
 The control service defaults are intentionally explicit. If your image names, camera devices, or service name differ, review `server/opendartboard-control.service` and `server/board_control.py` before installation.
+
+Player profiles are authoritative in the board's SQLite service and are available to every browser using that same Nano. Email is optional and is stored locally on that board; cross-board cloud accounts will require a separate shared identity service rather than treating an email address by itself as authentication.
 
 ## WebSocket compatibility
 

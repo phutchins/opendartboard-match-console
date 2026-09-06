@@ -168,6 +168,13 @@ function cameraDetail(camera: CalibrationCamera) {
   return 'Recalibration needed';
 }
 
+function createActionKey() {
+  if (typeof window.crypto?.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return `action_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function BoardAdmin({
   boardHost,
   onBoardHost,
@@ -185,6 +192,8 @@ export function BoardAdmin({
   const [boardEmpty, setBoardEmpty] = useState(false);
   const [runningAction, setRunningAction] = useState<BoardAction | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [overlayVersion, setOverlayVersion] = useState(() => Date.now());
+  const [overlayErrors, setOverlayErrors] = useState<Record<number, boolean>>({});
 
   useEffect(() => setDraftHost(boardHost), [boardHost]);
 
@@ -258,13 +267,17 @@ export function BoardAdmin({
         },
         body: JSON.stringify({
           acknowledgements: { boardEmpty },
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: createActionKey(),
         }),
       });
       const payload = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(payload.error || 'The board action failed');
       setNotice(payload.message || `${requested.label} complete`);
-      window.setTimeout(() => void refresh(true), 1200);
+      window.setTimeout(() => {
+        setOverlayErrors({});
+        setOverlayVersion(Date.now());
+        void refresh(true);
+      }, 1200);
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : 'The board action failed');
     } finally {
@@ -343,6 +356,52 @@ export function BoardAdmin({
           )}
           {status?.calibration.message && <p className="calibration-message">{status.calibration.message}</p>}
           {notice && <output className="board-action-notice">{notice}</output>}
+        </article>
+
+        <article className="board-admin-card calibration-overlay-card">
+          <div className="board-card-heading">
+            <span className="board-card-icon"><Camera /></span>
+            <div><p className="eyebrow">Visual verification</p><h2>Calibration overlays</h2></div>
+            <Button
+              aria-label="Reload calibration overlays"
+              onClick={() => {
+                setOverlayErrors({});
+                setOverlayVersion(Date.now());
+              }}
+              size="icon"
+              variant="ghost"
+            >
+              <RefreshCw />
+            </Button>
+          </div>
+          <p className="board-card-copy">The detected rings and radial wires should follow the physical board in every image. Click a camera to inspect it at full size.</p>
+          <div className="calibration-overlay-grid">
+            {displayedCameras.map((camera) => {
+              const contribution = cameraContribution(camera);
+              const source = `/api/control/v1/calibration/overlays/${camera.camera}?v=${overlayVersion}`;
+              return (
+                <figure className={`calibration-overlay is-${contribution}`} key={camera.camera}>
+                  <a href={source} rel="noreferrer" target="_blank">
+                    {!overlayErrors[camera.camera] ? (
+                      // These are live, same-origin diagnostic files rather than build-time assets.
+                      // oxlint-disable-next-line next/no-img-element
+                      <img
+                        alt={`Camera ${camera.camera + 1} calibration overlay`}
+                        onError={() => setOverlayErrors((current) => ({ ...current, [camera.camera]: true }))}
+                        src={source}
+                      />
+                    ) : (
+                      <span className="calibration-overlay-missing"><Camera /> Overlay unavailable</span>
+                    )}
+                  </a>
+                  <figcaption>
+                    <span>Camera {camera.camera + 1}</span>
+                    <strong>{cameraRole(camera)}</strong>
+                  </figcaption>
+                </figure>
+              );
+            })}
+          </div>
         </article>
 
         <article className="board-admin-card">
