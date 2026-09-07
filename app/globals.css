@@ -402,7 +402,8 @@ body {
 .rail-player-name span { margin-top: .2rem; color: #6f7b81; font-size: .66rem; }
 .rail-player-score { color: #f4f0e7; font-size: 1.45rem; font-weight: 800; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .rail-player.is-active .rail-player-score { color: var(--primary); }
-.rail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; padding: .9rem; border-top: 1px solid rgba(255,255,255,.08); }
+.rail-actions { display: grid; grid-template-columns: repeat(auto-fit,minmax(8.5rem,1fr)); gap: .5rem; padding: .9rem; border-top: 1px solid rgba(255,255,255,.08); }
+.rail-actions button { min-width: 0; width: 100%; }
 .rail-actions button:last-child { grid-column: 1/-1; }
 .connection-note { display: flex; align-items: center; gap: .45rem; padding: .9rem 1.15rem 1.1rem; color: #68757b; font-family: var(--font-mono); font-size: .64rem; }
 .live-score-panel { min-width: 0; }
