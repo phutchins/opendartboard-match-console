@@ -584,7 +584,10 @@ export default function Home() {
         />
       ) : (
         <GameLobby
+          boardHost={boardHost}
           onChooseGame={chooseGame}
+          onOpenBoard={() => setView('board')}
+          onOpenStats={() => setView('stats')}
           onSaveProfile={saveProfile}
           onTogglePlayer={togglePlayer}
           profileError={profileError}

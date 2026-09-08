@@ -32,34 +32,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-
-type CalibrationCamera = {
-  camera: number;
-  orientation?: string;
-  ready: boolean;
-  geometryValid?: boolean;
-  orientationValid?: boolean;
-  contribution?: 'full' | 'ring' | 'unavailable';
-  wedge20WireIndex?: number;
-};
-
-type BoardStatus = {
-  mode: 'opendartboard' | 'autodarts' | 'offline';
-  opendartboard: {
-    exists: boolean;
-    running: boolean;
-    image: string | null;
-    release: 'modified' | 'stable' | 'custom' | 'unknown';
-    debug: boolean;
-  };
-  autodarts: { active: boolean };
-  calibration: {
-    state: 'ready' | 'degraded' | 'calibrating' | 'unknown';
-    message: string;
-    cameras: CalibrationCamera[];
-  };
-  updatedAt: string;
-};
+import {
+  type BoardStatus,
+  type CalibrationCamera,
+  calibrationStateLabel,
+  cameraContribution,
+} from '@/lib/board-status';
 
 type BoardAction =
   | 'calibrate'
@@ -137,19 +115,6 @@ const actions: Record<BoardAction, ActionDefinition> = {
     description: 'Autodarts will stop before OpenDartboard starts so the camera devices are not shared.',
   },
 };
-
-function stateLabel(state: BoardStatus['calibration']['state']) {
-  if (state === 'ready') return 'Ready';
-  if (state === 'degraded') return 'Limited';
-  if (state === 'calibrating') return 'Calibrating';
-  return 'Unknown';
-}
-
-function cameraContribution(camera: CalibrationCamera) {
-  if (camera.contribution) return camera.contribution;
-  if (camera.ready) return 'full';
-  return camera.geometryValid ? 'ring' : 'unavailable';
-}
 
 function cameraRole(camera: CalibrationCamera) {
   const contribution = cameraContribution(camera);
@@ -351,7 +316,7 @@ export function BoardAdmin({
               </div>
               <div>
                 <span>Calibration</span>
-                <strong>{stateLabel(status.calibration.state)}</strong>
+                <strong>{calibrationStateLabel(status.calibration.state)}</strong>
                 <Badge variant={status.calibration.state === 'ready' ? 'default' : 'destructive'}>{cameraSummary}</Badge>
               </div>
               <div>

@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import { LobbyBoardOverview } from '@/components/lobby-board-overview';
 import type { GameMode, X01Rule } from '@/lib/game-engine';
 import type { PlayerProfile } from '@/lib/player-profiles';
 
@@ -45,19 +46,25 @@ const gameCopy: Record<GameMode, { title: string; eyebrow: string; description: 
 };
 
 export function GameLobby({
+  boardHost,
   profiles,
   selectedIds,
   profilesLoading,
   profileError,
   onChooseGame,
+  onOpenBoard,
+  onOpenStats,
   onSaveProfile,
   onTogglePlayer,
 }: {
+  boardHost: string;
   profiles: PlayerProfile[];
   selectedIds: string[];
   profilesLoading: boolean;
   profileError: string | null;
   onChooseGame: (mode: GameMode) => void;
+  onOpenBoard: () => void;
+  onOpenStats: () => void;
   onSaveProfile: (profile: { id?: string; name: string; email: string }) => Promise<void>;
   onTogglePlayer: (id: string) => void;
 }) {
@@ -100,6 +107,8 @@ export function GameLobby({
         </div>
         <div className="lineup-summary"><Users /><strong>{selectedIds.length}</strong><span>selected</span></div>
       </div>
+
+      <LobbyBoardOverview boardHost={boardHost} onOpenBoard={onOpenBoard} onOpenStats={onOpenStats} />
 
       <div className="lobby-grid">
         <section className="lobby-card player-roster-card">
