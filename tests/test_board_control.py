@@ -84,6 +84,21 @@ class BoardControlTests(unittest.TestCase):
         )
         self.assertIn("All 3 cameras contribute", status["message"])
 
+    def test_ready_wedge_map_does_not_require_optional_camera_role(self):
+        logs = """
+        CALIBRATION_STATUS camera=0 status=DEGRADED geometry=valid orientation=invalid camera_position=UNKNOWN wedge20_wire=-1 south_wire=19 wires_valid=true
+        CALIBRATION_STATUS camera=1 status=READY geometry=valid orientation=valid camera_position=UNKNOWN wedge20_wire=9 south_wire=19 wires_valid=true
+        CALIBRATION_STATUS camera=2 status=DEGRADED geometry=valid orientation=invalid camera_position=BOTTOM wedge20_wire=-1 south_wire=0 wires_valid=true
+        DARTBOARD CALIBRATION COMPLETED
+        """
+        with patch.object(board_control, "docker", return_value=Result(stdout=logs)):
+            status = board_control.calibration_from_logs(True)
+
+        self.assertEqual(status["state"], "ready")
+        self.assertTrue(status["cameras"][1]["ready"])
+        self.assertEqual(status["cameras"][1]["contribution"], "full")
+        self.assertEqual(status["cameras"][1]["orientation"], "UNKNOWN")
+
     def test_calibration_logs_report_numbered_scoring_unavailable_without_ready_camera(self):
         logs = """
         CALIBRATION_STATUS camera=0 status=INVALID geometry=invalid orientation=invalid camera_position=UNKNOWN wedge20_wire=-1 south_wire=-1 wires_valid=false

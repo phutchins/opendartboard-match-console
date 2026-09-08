@@ -158,8 +158,7 @@ def calibration_from_logs(running):
         geometry_valid = entry.get("geometryValid")
         orientation_valid = entry.get("orientationValid")
         ready = (
-            orientation != "UNKNOWN"
-            and wedge_index >= 0
+            wedge_index >= 0
             and reported_health in {None, "ready"}
             and geometry_valid is not False
             and orientation_valid is not False
