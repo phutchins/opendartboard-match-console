@@ -569,8 +569,11 @@ body {
 .calibration-overlay img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; transition: transform .18s ease; }
 .calibration-overlay a:hover img { transform: scale(1.015); }
 .calibration-overlay figcaption { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .75rem; }
+.calibration-overlay figcaption > div { display: grid; gap: .12rem; min-width: 0; }
 .calibration-overlay figcaption span { color: #8b969b; font-size: .7rem; }
 .calibration-overlay figcaption strong { color: #ff8b69; font-size: .62rem; letter-spacing: .05em; text-transform: uppercase; }
+.calibration-overlay figcaption small { color: #657177; font-family: var(--font-mono); font-size: .54rem; }
+.calibration-overlay figcaption button { flex: 0 0 auto; }
 .calibration-overlay.is-full figcaption strong, .calibration-overlay.is-ring figcaption strong { color: var(--primary); }
 .calibration-overlay.is-ring figcaption strong { color: #c9e875; }
 .calibration-overlay-missing { display: flex; align-items: center; gap: .45rem; color: #647178; font-size: .7rem; }
@@ -596,6 +599,33 @@ body {
 .dialog-preparing { display: flex; align-items: center; justify-content: center; gap: .5rem; color: #8d989d; font-size: .75rem; }
 .dialog-consequences { display: grid; gap: .35rem; padding-left: 1.15rem; color: #899499; font-size: .73rem; line-height: 1.45; list-style: disc; }
 .dialog-acknowledgement { display: flex; align-items: center; gap: .65rem; padding: .75rem; border: 1px solid rgba(216,255,73,.2); border-radius: .65rem; color: #d8d5cc; background: rgba(216,255,73,.045); font-size: .75rem; cursor: pointer; }
+.calibration-editor-dialog { width: min(76rem,calc(100vw - 2rem)); max-width: none; max-height: calc(100vh - 2rem); overflow-y: auto; background: #0d1214; }
+.calibration-landmark-key { display: flex; flex-wrap: wrap; gap: .45rem .9rem; color: #89949a; font-size: .68rem; }
+.calibration-landmark-key span { display: flex; align-items: center; gap: .35rem; }
+.calibration-landmark-key i { width: .55rem; height: .55rem; border: 2px solid var(--primary); border-radius: 50%; background: #0b0f11; }
+.calibration-landmark-key i.is-center { border-color: #fff; }
+.calibration-landmark-key i.is-north { border-color: #ff8b69; }
+.calibration-landmark-key i.is-east { border-color: #5ddcff; }
+.calibration-landmark-key i.is-south { border-color: #f9e36d; }
+.calibration-landmark-key i.is-west { border-color: #c792ff; }
+.calibration-editor-surface { position: relative; overflow: hidden; width: 100%; aspect-ratio: 16/9; border: 1px solid rgba(255,255,255,.12); border-radius: .8rem; background: #050708; touch-action: none; user-select: none; }
+.calibration-editor-surface > img, .calibration-model-preview { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.calibration-editor-surface > img { object-fit: fill; }
+.calibration-model-preview { overflow: visible; pointer-events: none; }
+.calibration-model-preview polyline, .calibration-model-preview line { fill: none; stroke: #ffe445; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.calibration-model-preview polyline.is-double { stroke: #3de6e0; stroke-width: 3; }
+.calibration-model-preview polyline.is-triple { stroke: #4aff73; stroke-width: 3; }
+.calibration-model-preview polyline.is-bull { stroke: #ff554d; stroke-width: 3; }
+.calibration-handle { position: absolute; z-index: 2; width: 1.45rem; height: 1.45rem; padding: 0; transform: translate(-50%,-50%); border: 3px solid var(--primary); border-radius: 50%; outline: 2px solid rgba(0,0,0,.85); background: rgba(10,14,16,.86); color: #fff; cursor: grab; box-shadow: 0 0 0 3px rgba(216,255,73,.2); }
+.calibration-handle:active { cursor: grabbing; }
+.calibration-handle:focus-visible { outline: 3px solid #fff; }
+.calibration-handle span { position: absolute; left: 50%; top: calc(100% + .35rem); transform: translateX(-50%); padding: .15rem .3rem; border-radius: .25rem; background: rgba(0,0,0,.82); font-family: var(--font-mono); font-size: .52rem; white-space: nowrap; }
+.calibration-handle.is-center { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.22); }
+.calibration-handle.is-north { border-color: #ff8b69; }
+.calibration-handle.is-east { border-color: #5ddcff; }
+.calibration-handle.is-south { border-color: #f9e36d; }
+.calibration-handle.is-west { border-color: #c792ff; }
+.calibration-editor-note { color: #758187; font-size: .65rem; }
 .is-spinning { animation: spin 1s linear infinite; }
 
 @media (max-width: 680px) {
@@ -639,6 +669,9 @@ body {
   .board-mode-chip { min-width: 0; }
   .board-admin-grid { grid-template-columns: 1fr; }
   .calibration-overlay-grid { grid-template-columns: 1fr; }
+  .calibration-overlay figcaption { align-items: flex-end; }
+  .calibration-editor-dialog { width: calc(100vw - 1rem); max-width: none; }
+  .calibration-handle { width: 1.1rem; height: 1.1rem; }
   .board-action-stack { grid-template-columns: 1fr; }
   .lobby-heading { align-items: stretch; flex-direction: column; }
   .lineup-summary { align-self: flex-start; }

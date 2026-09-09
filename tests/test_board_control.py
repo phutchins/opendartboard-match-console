@@ -53,6 +53,19 @@ class BoardControlTests(unittest.TestCase):
         self.assertTrue(all(camera["ready"] for camera in status["cameras"]))
         self.assertTrue(all(camera["contribution"] == "full" for camera in status["cameras"]))
 
+    def test_calibration_model_exposes_residuals_and_landmarks(self):
+        logs = """
+        CALIBRATION_STATUS camera=0 status=READY geometry=valid orientation=valid camera_position=MIDDLE wedge20_wire=0 south_wire=10 wires_valid=true
+        CALIBRATION_MODEL camera=0 source=MANUAL status=VALID residual_mean_px=1.250000 residual_p90_px=2.750000 residual_samples=720 center_x=640 center_y=360 north_x=640 north_y=90 east_x=1050 east_y=360 south_x=640 south_y=640 west_x=230 west_y=360
+        """
+        with patch.object(board_control, "docker", return_value=Result(stdout=logs)):
+            status = board_control.calibration_from_logs(True)
+
+        camera = status["cameras"][0]
+        self.assertEqual(camera["modelSource"], "manual")
+        self.assertEqual(camera["ringResidualP90Pixels"], 2.75)
+        self.assertEqual(camera["landmarks"]["north"], {"x": 640.0, "y": 90.0})
+
     def test_calibration_logs_reject_invalid_geometry(self):
         logs = """
         CALIBRATION_STATUS camera=0 status=READY geometry=valid orientation=valid camera_position=TOP wedge20_wire=2 south_wire=12 wires_valid=true
@@ -114,6 +127,22 @@ class BoardControlTests(unittest.TestCase):
     def test_action_enum_rejects_unknown_commands(self):
         with self.assertRaisesRegex(ValueError, "Unsupported action"):
             board_control.perform_action("shell.run", {"command": "anything"})
+
+    def test_manual_override_requires_all_in_frame_landmarks(self):
+        valid = {
+            "camera": 1,
+            "landmarks": {
+                "center": {"x": 640, "y": 360},
+                "north": {"x": 640, "y": 100},
+                "east": {"x": 1000, "y": 360},
+                "south": {"x": 640, "y": 620},
+                "west": {"x": 280, "y": 360},
+            },
+        }
+        board_control.validate_calibration_override(valid)
+        valid["landmarks"]["north"]["y"] = -1
+        with self.assertRaisesRegex(ValueError, "inside the camera image"):
+            board_control.validate_calibration_override(valid)
 
     def test_switch_to_autodarts_uses_only_fixed_commands(self):
         calls = []

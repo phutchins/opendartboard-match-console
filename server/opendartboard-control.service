@@ -14,11 +14,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=/run/opendartboard-control /var/lib/opendartboard-control
+ReadWritePaths=/run/opendartboard-control /var/lib/opendartboard-control -/var/lib/opendartboard -/home/nano/.local/share/opendartboard
 EnvironmentFile=-/etc/default/opendartboard-match-console
 Environment=OPENDARTBOARD_STABLE_IMAGE=opendartboard:0.1.4
 Environment=OPENDARTBOARD_MODIFIED_IMAGE=opendartboard:local
-Environment=OPENDARTBOARD_DATA_DIR=/var/lib/opendartboard
 
 [Install]
 WantedBy=multi-user.target

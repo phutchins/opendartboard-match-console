@@ -26,6 +26,7 @@ STATE_PATH = os.environ.get("CONTROL_STATE", "/var/lib/opendartboard-control/sta
 STABLE_IMAGE = os.environ.get("OPENDARTBOARD_STABLE_IMAGE", "opendartboard:0.1.4")
 MODIFIED_IMAGE = os.environ.get("OPENDARTBOARD_MODIFIED_IMAGE", "opendartboard:local")
 DATA_DIR = os.environ.get("OPENDARTBOARD_DATA_DIR", "/var/lib/opendartboard")
+CALIBRATION_OVERRIDES_PATH = os.path.join(DATA_DIR, "calibration_overrides.json")
 CONTAINER_NAME = "opendartboard"
 AUTODARTS_SERVICE = "autodarts"
 DOCKER = os.environ.get("DOCKER_BIN", "/usr/bin/docker")
@@ -148,6 +149,39 @@ def calibration_from_logs(running):
             "geometryValid": geometry == "valid",
             "orientationValid": orientation_health == "valid",
         })
+    model_pattern = re.compile(
+        r"CALIBRATION_MODEL\s+camera=(\d+)\s+source=(AUTO|MANUAL)\s+status=(VALID|INVALID)"
+        r"\s+residual_mean_px=([^\s]+)\s+residual_p90_px=([^\s]+)\s+residual_samples=(\d+)"
+        r"\s+center_x=([^\s]+)\s+center_y=([^\s]+)"
+        r"\s+north_x=([^\s]+)\s+north_y=([^\s]+)"
+        r"\s+east_x=([^\s]+)\s+east_y=([^\s]+)"
+        r"\s+south_x=([^\s]+)\s+south_y=([^\s]+)"
+        r"\s+west_x=([^\s]+)\s+west_y=([^\s]+)"
+    )
+    for match in model_pattern.finditer(logs):
+        values = match.groups()
+        entry = cameras.setdefault(int(values[0]), {})
+        try:
+            residual_mean = float(values[3])
+            residual_p90 = float(values[4])
+            coordinates = [float(value) for value in values[6:16]]
+        except ValueError:
+            continue
+        entry.update({
+            "modelSource": values[1].lower(),
+            "modelValid": values[2] == "VALID",
+            "ringResidualMeanPixels": residual_mean if math.isfinite(residual_mean) else None,
+            "ringResidualP90Pixels": residual_p90 if math.isfinite(residual_p90) else None,
+            "residualSamples": int(values[5]),
+        })
+        if all(math.isfinite(value) and value >= 0 for value in coordinates):
+            entry["landmarks"] = {
+                "center": {"x": coordinates[0], "y": coordinates[1]},
+                "north": {"x": coordinates[2], "y": coordinates[3]},
+                "east": {"x": coordinates[4], "y": coordinates[5]},
+                "south": {"x": coordinates[6], "y": coordinates[7]},
+                "west": {"x": coordinates[8], "y": coordinates[9]},
+            }
 
     camera_status = []
     for index in sorted(cameras):
@@ -179,6 +213,12 @@ def calibration_from_logs(running):
             "geometryValid": geometry_valid,
             "orientationValid": orientation_valid,
             "contribution": contribution,
+            "modelSource": entry.get("modelSource"),
+            "modelValid": entry.get("modelValid", False),
+            "ringResidualMeanPixels": entry.get("ringResidualMeanPixels"),
+            "ringResidualP90Pixels": entry.get("ringResidualP90Pixels"),
+            "residualSamples": entry.get("residualSamples", 0),
+            "landmarks": entry.get("landmarks"),
         })
 
     if "Capturing frames for calibration" in logs and "DARTBOARD CALIBRATION COMPLETED" not in logs:
@@ -271,6 +311,50 @@ def recreate_opendartboard(state, start=True):
         docker("start", CONTAINER_NAME, timeout=20)
 
 
+def validate_calibration_override(parameters, require_landmarks=True):
+    camera = parameters.get("camera")
+    if isinstance(camera, bool) or not isinstance(camera, int) or camera not in range(len(CAMERAS)):
+        raise ValueError("camera must be 0, 1, or 2")
+    if not require_landmarks:
+        if set(parameters) != {"camera"}:
+            raise ValueError("Only camera is accepted")
+        return
+    landmarks = parameters.get("landmarks")
+    if not isinstance(landmarks, dict) or set(landmarks) != {"center", "north", "east", "south", "west"}:
+        raise ValueError("Five calibration landmarks are required")
+    for name, point in landmarks.items():
+        if not isinstance(point, dict) or set(point) != {"x", "y"}:
+            raise ValueError("{} must contain x and y".format(name))
+        x = point.get("x")
+        y = point.get("y")
+        if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            raise ValueError("Calibration coordinates must be numeric")
+        if not math.isfinite(float(x)) or not math.isfinite(float(y)) or not 0 <= x < 1280 or not 0 <= y < 720:
+            raise ValueError("Calibration coordinates must be inside the camera image")
+
+
+def save_calibration_override(camera, landmarks=None):
+    try:
+        with open(CALIBRATION_OVERRIDES_PATH, "r", encoding="utf-8") as override_file:
+            document = json.load(override_file)
+    except (OSError, ValueError):
+        document = {"version": 1, "cameras": {}}
+    if not isinstance(document.get("cameras"), dict):
+        document["cameras"] = {}
+    if landmarks is None:
+        document["cameras"].pop(str(camera), None)
+    else:
+        document["cameras"][str(camera)] = landmarks
+    document["version"] = 1
+    temporary_path = CALIBRATION_OVERRIDES_PATH + ".tmp"
+    os.makedirs(os.path.dirname(CALIBRATION_OVERRIDES_PATH), mode=0o750, exist_ok=True)
+    with open(temporary_path, "w", encoding="utf-8") as override_file:
+        json.dump(document, override_file, separators=(",", ":"))
+        override_file.write("\n")
+    os.chmod(temporary_path, 0o600)
+    os.replace(temporary_path, CALIBRATION_OVERRIDES_PATH)
+
+
 def perform_action(action, parameters):
     state = load_state()
     if action == "calibrate":
@@ -320,6 +404,26 @@ def perform_action(action, parameters):
                 docker("start", CONTAINER_NAME, timeout=20)
             return "OpenDartboard now owns the cameras."
         raise ValueError("target must be autodarts or opendartboard")
+    if action == "calibration.override.set":
+        validate_calibration_override(parameters)
+        save_calibration_override(parameters["camera"], parameters["landmarks"])
+        systemctl("stop", AUTODARTS_SERVICE, timeout=20)
+        inspected = inspect_container()
+        if inspected is None:
+            recreate_opendartboard(state)
+        else:
+            docker("restart", "--time", "5", CONTAINER_NAME, timeout=30)
+        return "Manual camera alignment saved. OpenDartboard is recalibrating with it now."
+    if action == "calibration.override.clear":
+        validate_calibration_override(parameters, require_landmarks=False)
+        save_calibration_override(parameters["camera"])
+        systemctl("stop", AUTODARTS_SERVICE, timeout=20)
+        inspected = inspect_container()
+        if inspected is None:
+            recreate_opendartboard(state)
+        else:
+            docker("restart", "--time", "5", CONTAINER_NAME, timeout=30)
+        return "Manual camera alignment removed. Automatic calibration is running now."
     raise ValueError("Unsupported action")
 
 
@@ -348,6 +452,16 @@ ACTION_COPY = {
         "Transfer the cameras to the selected scoring service.",
         ["The currently active scorer will stop first.", "Any live game in that scorer will be interrupted."],
         [],
+    ),
+    "calibration.override.set": (
+        "Save the five-point camera alignment and recalibrate.",
+        ["Scoring will be unavailable briefly.", "The board must be completely empty."],
+        ["boardEmpty"],
+    ),
+    "calibration.override.clear": (
+        "Remove the manual alignment and return this camera to automatic calibration.",
+        ["Scoring will be unavailable briefly.", "The board must be completely empty."],
+        ["boardEmpty"],
     ),
 }
 
@@ -392,16 +506,19 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def send_calibration_overlay(self, camera):
+    def send_calibration_image(self, camera, kind):
         if camera not in range(len(CAMERAS)):
             self.send_json(404, {"error": "Calibration overlay not found"})
             return
-        path = os.path.join(
-            DATA_DIR,
-            "debug_frames",
-            "geometry_calibration",
-            "calibration_camera_{}.jpg".format(camera),
-        )
+        if kind == "overlay":
+            path = os.path.join(
+                DATA_DIR,
+                "debug_frames",
+                "geometry_calibration",
+                "calibration_camera_{}.jpg".format(camera),
+            )
+        else:
+            path = os.path.join(DATA_DIR, "cache", "backgrounds", "camera_{}_background.jpg".format(camera))
         try:
             with open(path, "rb") as overlay:
                 data = overlay.read()
@@ -452,7 +569,11 @@ class ControlHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/")
         overlay_match = re.fullmatch(r"/api/control/v1/calibration/overlays/([0-2])", path)
         if overlay_match:
-            self.send_calibration_overlay(int(overlay_match.group(1)))
+            self.send_calibration_image(int(overlay_match.group(1)), "overlay")
+            return
+        background_match = re.fullmatch(r"/api/control/v1/calibration/backgrounds/([0-2])", path)
+        if background_match:
+            self.send_calibration_image(int(background_match.group(1)), "background")
             return
         if path != "/api/control/v1/status":
             self.send_json(404, {"error": "Not found"})
@@ -501,6 +622,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             raise ValueError("target must be stable or modified")
         if action == "mode.set" and parameters.get("target") not in {"autodarts", "opendartboard"}:
             raise ValueError("target must be autodarts or opendartboard")
+        if action == "calibration.override.set":
+            validate_calibration_override(parameters)
+        if action == "calibration.override.clear":
+            validate_calibration_override(parameters, require_landmarks=False)
         if action in {"calibrate", "scorer.restart"} and parameters:
             raise ValueError("This action does not accept parameters")
 

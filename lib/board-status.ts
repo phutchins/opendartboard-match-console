@@ -6,6 +6,22 @@ export type CalibrationCamera = {
   orientationValid?: boolean;
   contribution?: 'full' | 'ring' | 'unavailable';
   wedge20WireIndex?: number;
+  modelSource?: 'auto' | 'manual';
+  modelValid?: boolean;
+  ringResidualMeanPixels?: number | null;
+  ringResidualP90Pixels?: number | null;
+  residualSamples?: number;
+  landmarks?: CalibrationLandmarks | null;
+};
+
+export type CalibrationPoint = { x: number; y: number };
+
+export type CalibrationLandmarks = {
+  center: CalibrationPoint;
+  north: CalibrationPoint;
+  east: CalibrationPoint;
+  south: CalibrationPoint;
+  west: CalibrationPoint;
 };
 
 export type BoardStatus = {

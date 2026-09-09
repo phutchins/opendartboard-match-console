@@ -8,14 +8,17 @@ import {
   CircleAlert,
   Gauge,
   LoaderCircle,
+  Move,
   RefreshCw,
   RotateCcw,
+  Save,
   ServerCog,
   ShieldCheck,
   SquarePower,
+  Trash2,
   Wrench,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type PointerEvent } from 'react';
 
 import {
   AlertDialog,
@@ -33,8 +36,18 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   type BoardStatus,
   type CalibrationCamera,
+  type CalibrationLandmarks,
+  type CalibrationPoint,
   calibrationStateLabel,
   cameraContribution,
 } from '@/lib/board-status';
@@ -47,7 +60,9 @@ type BoardAction =
   | 'use_modified'
   | 'use_stable'
   | 'use_autodarts'
-  | 'use_opendartboard';
+  | 'use_opendartboard'
+  | 'manual_alignment'
+  | 'clear_alignment';
 
 type ActionDefinition = {
   action: BoardAction;
@@ -63,6 +78,94 @@ type PreparedAction = {
   consequences: string[];
   requiredAcknowledgements: string[];
 };
+
+type ActionRequest = { action: string; parameters: Record<string, unknown> };
+type LandmarkName = keyof CalibrationLandmarks;
+
+const landmarkNames: LandmarkName[] = ['center', 'north', 'east', 'south', 'west'];
+const ringRadii = [6.35, 15.9, 99, 107, 162, 170];
+
+function defaultLandmarks(): CalibrationLandmarks {
+  return {
+    center: { x: 640, y: 360 },
+    north: { x: 640, y: 100 },
+    east: { x: 1020, y: 360 },
+    south: { x: 640, y: 620 },
+    west: { x: 260, y: 360 },
+  };
+}
+
+function solveLinearSystem(matrix: number[][], values: number[]) {
+  const augmented = matrix.map((row, index) => [...row, values[index]]);
+  for (let column = 0; column < values.length; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < values.length; row += 1) {
+      if (Math.abs(augmented[row][column]) > Math.abs(augmented[pivot][column])) pivot = row;
+    }
+    if (Math.abs(augmented[pivot][column]) < 1e-8) return null;
+    [augmented[column], augmented[pivot]] = [augmented[pivot], augmented[column]];
+    const divisor = augmented[column][column];
+    for (let index = column; index <= values.length; index += 1) augmented[column][index] /= divisor;
+    for (let row = 0; row < values.length; row += 1) {
+      if (row === column) continue;
+      const factor = augmented[row][column];
+      for (let index = column; index <= values.length; index += 1) {
+        augmented[row][index] -= factor * augmented[column][index];
+      }
+    }
+  }
+  return augmented.map((row) => row[values.length]);
+}
+
+function calibrationHomography(landmarks: CalibrationLandmarks) {
+  const correspondences: Array<[number, number, CalibrationPoint]> = [
+    [0, 0, landmarks.center],
+    [0, -1, landmarks.north],
+    [1, 0, landmarks.east],
+    [0, 1, landmarks.south],
+    [-1, 0, landmarks.west],
+  ];
+  const rows: number[][] = [];
+  const values: number[] = [];
+  for (const [x, y, point] of correspondences) {
+    rows.push([x, y, 1, 0, 0, 0, -point.x * x, -point.x * y]);
+    values.push(point.x);
+    rows.push([0, 0, 0, x, y, 1, -point.y * x, -point.y * y]);
+    values.push(point.y);
+  }
+  const normal = Array.from({ length: 8 }, () => Array(8).fill(0) as number[]);
+  const right = Array(8).fill(0) as number[];
+  for (let row = 0; row < rows.length; row += 1) {
+    for (let column = 0; column < 8; column += 1) {
+      right[column] += rows[row][column] * values[row];
+      for (let inner = 0; inner < 8; inner += 1) {
+        normal[column][inner] += rows[row][column] * rows[row][inner];
+      }
+    }
+  }
+  const solved = solveLinearSystem(normal, right);
+  return solved ? [...solved, 1] : null;
+}
+
+function projectCalibrationPoint(matrix: number[] | null, x: number, y: number): CalibrationPoint | null {
+  if (!matrix) return null;
+  const denominator = matrix[6] * x + matrix[7] * y + matrix[8];
+  if (Math.abs(denominator) < 1e-8) return null;
+  return {
+    x: (matrix[0] * x + matrix[1] * y + matrix[2]) / denominator,
+    y: (matrix[3] * x + matrix[4] * y + matrix[5]) / denominator,
+  };
+}
+
+function modelPolyline(matrix: number[] | null, radius: number, samples = 120) {
+  const points: string[] = [];
+  for (let index = 0; index <= samples; index += 1) {
+    const angle = index / samples * Math.PI * 2;
+    const point = projectCalibrationPoint(matrix, radius * Math.cos(angle), radius * Math.sin(angle));
+    if (point) points.push(`${point.x.toFixed(1)},${point.y.toFixed(1)}`);
+  }
+  return points.join(' ');
+}
 
 const actions: Record<BoardAction, ActionDefinition> = {
   calibrate: {
@@ -114,6 +217,18 @@ const actions: Record<BoardAction, ActionDefinition> = {
     title: 'Give the cameras to OpenDartboard?',
     description: 'Autodarts will stop before OpenDartboard starts so the camera devices are not shared.',
   },
+  manual_alignment: {
+    action: 'manual_alignment',
+    label: 'Save fine-tune',
+    title: 'Apply this camera alignment?',
+    description: 'The scorer will restart and use these five physical board landmarks for this camera.',
+  },
+  clear_alignment: {
+    action: 'clear_alignment',
+    label: 'Use automatic alignment',
+    title: 'Remove the manual alignment?',
+    description: 'This camera will return to automatic pixel-based calibration when the scorer restarts.',
+  },
 };
 
 function cameraRole(camera: CalibrationCamera) {
@@ -152,6 +267,7 @@ export function BoardAdmin({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<ActionDefinition | null>(null);
+  const [pendingRequest, setPendingRequest] = useState<ActionRequest | null>(null);
   const [preparedAction, setPreparedAction] = useState<PreparedAction | null>(null);
   const [preparingAction, setPreparingAction] = useState(false);
   const [boardEmpty, setBoardEmpty] = useState(false);
@@ -159,6 +275,8 @@ export function BoardAdmin({
   const [notice, setNotice] = useState<string | null>(null);
   const [overlayVersion, setOverlayVersion] = useState(() => Date.now());
   const [overlayErrors, setOverlayErrors] = useState<Record<number, boolean>>({});
+  const [adjustingCamera, setAdjustingCamera] = useState<CalibrationCamera | null>(null);
+  const [draftLandmarks, setDraftLandmarks] = useState<CalibrationLandmarks>(defaultLandmarks);
 
   useEffect(() => setDraftHost(boardHost), [boardHost]);
 
@@ -186,7 +304,7 @@ export function BoardAdmin({
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  const actionRequest = (definition: ActionDefinition) => {
+  const actionRequest = (definition: ActionDefinition): ActionRequest => {
     if (definition.action === 'restart') return { action: 'scorer.restart', parameters: {} };
     if (definition.action === 'enable_debug') return { action: 'debug.set', parameters: { enabled: true } };
     if (definition.action === 'disable_debug') return { action: 'debug.set', parameters: { enabled: false } };
@@ -197,8 +315,10 @@ export function BoardAdmin({
     return { action: 'calibrate', parameters: {} };
   };
 
-  const prepareAction = async (definition: ActionDefinition) => {
+  const prepareAction = async (definition: ActionDefinition, override?: ActionRequest) => {
+    const request = override || actionRequest(definition);
     setPendingAction(definition);
+    setPendingRequest(request);
     setPreparedAction(null);
     setBoardEmpty(false);
     setPreparingAction(true);
@@ -206,7 +326,7 @@ export function BoardAdmin({
       const response = await fetch('/api/control/v1/actions/prepare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-OpenDartboard-Action': '1' },
-        body: JSON.stringify(actionRequest(definition)),
+        body: JSON.stringify(request),
       });
       const payload = await response.json() as PreparedAction & { error?: string };
       if (!response.ok) throw new Error(payload.error || 'Could not prepare the board action');
@@ -214,15 +334,17 @@ export function BoardAdmin({
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : 'Could not prepare the board action');
       setPendingAction(null);
+      setPendingRequest(null);
     } finally {
       setPreparingAction(false);
     }
   };
 
   const runAction = async () => {
-    if (!pendingAction || !preparedAction) return;
+    if (!pendingAction || !pendingRequest || !preparedAction) return;
     const requested = pendingAction;
-    setPendingAction(null);
+      setPendingAction(null);
+      setPendingRequest(null);
     setRunningAction(requested.action);
     setNotice(null);
     try {
@@ -245,7 +367,7 @@ export function BoardAdmin({
         setOverlayVersion(Date.now());
         void refresh(true);
       }, 1200);
-      if (requested.action === 'calibrate') {
+      if (requested.action === 'calibrate' || requested.action === 'manual_alignment' || requested.action === 'clear_alignment') {
         window.setTimeout(async () => {
           const refreshed = await refresh(true);
           setOverlayErrors({});
@@ -260,6 +382,51 @@ export function BoardAdmin({
     } finally {
       setRunningAction(null);
     }
+  };
+
+  const openFineTune = (camera: CalibrationCamera) => {
+    setDraftLandmarks(camera.landmarks && camera.orientationValid
+      ? camera.landmarks
+      : defaultLandmarks());
+    setAdjustingCamera(camera);
+  };
+
+  const moveLandmark = (name: LandmarkName, event: PointerEvent<HTMLButtonElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const surface = event.currentTarget.parentElement;
+    if (!surface) return;
+    const bounds = surface.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1279, (event.clientX - bounds.left) / bounds.width * 1280));
+    const y = Math.max(0, Math.min(719, (event.clientY - bounds.top) / bounds.height * 720));
+    setDraftLandmarks((current) => ({ ...current, [name]: { x, y } }));
+  };
+
+  const nudgeLandmark = (name: LandmarkName, deltaX: number, deltaY: number) => {
+    setDraftLandmarks((current) => ({
+      ...current,
+      [name]: {
+        x: Math.max(0, Math.min(1279, current[name].x + deltaX)),
+        y: Math.max(0, Math.min(719, current[name].y + deltaY)),
+      },
+    }));
+  };
+
+  const saveFineTune = () => {
+    if (!adjustingCamera) return;
+    const camera = adjustingCamera.camera;
+    setAdjustingCamera(null);
+    void prepareAction(actions.manual_alignment, {
+      action: 'calibration.override.set',
+      parameters: { camera, landmarks: draftLandmarks },
+    });
+  };
+
+  const clearFineTune = (camera: CalibrationCamera) => {
+    setAdjustingCamera(null);
+    void prepareAction(actions.clear_alignment, {
+      action: 'calibration.override.clear',
+      parameters: { camera: camera.camera },
+    });
   };
 
   const debugAction = status?.opendartboard.debug ? actions.disable_debug : actions.enable_debug;
@@ -278,6 +445,7 @@ export function BoardAdmin({
   const displayedCameras: CalibrationCamera[] = status?.calibration.cameras.length
     ? status.calibration.cameras
     : [0, 1, 2].map((camera) => ({ camera, ready: false, contribution: 'unavailable' }));
+  const previewHomography = useMemo(() => calibrationHomography(draftLandmarks), [draftLandmarks]);
 
   return (
     <section className="board-admin-page">
@@ -372,8 +540,22 @@ export function BoardAdmin({
                     )}
                   </a>
                   <figcaption>
-                    <span>Camera {camera.camera + 1}</span>
-                    <strong>{cameraRole(camera)}</strong>
+                    <div>
+                      <span>Camera {camera.camera + 1}</span>
+                      <strong>{cameraRole(camera)}</strong>
+                      {camera.ringResidualP90Pixels != null && (
+                        <small>Pixel fit {camera.ringResidualMeanPixels?.toFixed(1)} avg · {camera.ringResidualP90Pixels.toFixed(1)} p90</small>
+                      )}
+                    </div>
+                    <Button
+                      aria-label={`Fine-tune camera ${camera.camera + 1}`}
+                      disabled={status?.mode !== 'opendartboard' || !!runningAction}
+                      onClick={() => openFineTune(camera)}
+                      size="sm"
+                      variant="outline"
+                    >
+                      <Move /> Fine-tune
+                    </Button>
                   </figcaption>
                 </figure>
               );
@@ -442,7 +624,85 @@ export function BoardAdmin({
         </article>
       </section>
 
-      <AlertDialog onOpenChange={(open) => { if (!open) { setPendingAction(null); setPreparedAction(null); } }} open={pendingAction !== null}>
+      <Dialog onOpenChange={(open) => { if (!open) setAdjustingCamera(null); }} open={adjustingCamera !== null}>
+        <DialogContent className="calibration-editor-dialog">
+          <DialogHeader>
+            <DialogTitle>Fine-tune camera {(adjustingCamera?.camera ?? 0) + 1}</DialogTitle>
+            <DialogDescription>
+              Drag the center marker onto the bull and the four edge markers onto the outside wire of the named double segment. The model lines update immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="calibration-landmark-key" aria-label="Calibration landmark instructions">
+            <span><i className="is-center" /> Center: bull</span>
+            <span><i className="is-north" /> Top: D20</span>
+            <span><i className="is-east" /> Right: D6</span>
+            <span><i className="is-south" /> Bottom: D3</span>
+            <span><i className="is-west" /> Left: D11</span>
+          </div>
+          <div className="calibration-editor-surface">
+            {adjustingCamera && (
+              // This is a live, same-origin camera background rather than a build-time asset.
+              // oxlint-disable-next-line next/no-img-element
+              <img
+                alt={`Empty-board reference from camera ${adjustingCamera.camera + 1}`}
+                src={`/api/control/v1/calibration/backgrounds/${adjustingCamera.camera}?v=${overlayVersion}`}
+              />
+            )}
+            <svg aria-hidden="true" className="calibration-model-preview" viewBox="0 0 1280 720">
+              {ringRadii.map((radius) => (
+                <polyline
+                  className={radius >= 162 ? 'is-double' : radius >= 99 ? 'is-triple' : 'is-bull'}
+                  key={radius}
+                  points={modelPolyline(previewHomography, radius / 170)}
+                />
+              ))}
+              {Array.from({ length: 20 }, (_, index) => {
+                const center = projectCalibrationPoint(previewHomography, 0, 0);
+                const angle = (-99 + index * 18) * Math.PI / 180;
+                const edge = projectCalibrationPoint(previewHomography, Math.cos(angle), Math.sin(angle));
+                return center && edge ? (
+                  <line key={index} x1={center.x} x2={edge.x} y1={center.y} y2={edge.y} />
+                ) : null;
+              })}
+            </svg>
+            {landmarkNames.map((name) => {
+              const point = draftLandmarks[name];
+              return (
+                <button
+                  aria-label={`Move ${name} calibration marker. Use arrow keys for one-pixel adjustments.`}
+                  className={`calibration-handle is-${name}`}
+                  key={name}
+                  onKeyDown={(event) => {
+                    const step = event.shiftKey ? 5 : 1;
+                    if (event.key === 'ArrowLeft') nudgeLandmark(name, -step, 0);
+                    else if (event.key === 'ArrowRight') nudgeLandmark(name, step, 0);
+                    else if (event.key === 'ArrowUp') nudgeLandmark(name, 0, -step);
+                    else if (event.key === 'ArrowDown') nudgeLandmark(name, 0, step);
+                    else return;
+                    event.preventDefault();
+                  }}
+                  onPointerDown={(event) => event.currentTarget.setPointerCapture(event.pointerId)}
+                  onPointerMove={(event) => moveLandmark(name, event)}
+                  style={{ left: `${point.x / 12.8}%`, top: `${point.y / 7.2}%` }}
+                  type="button"
+                >
+                  <span>{name === 'center' ? 'Bull' : name === 'north' ? 'D20' : name === 'east' ? 'D6' : name === 'south' ? 'D3' : 'D11'}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="calibration-editor-note">Zoom the page if needed. Arrow keys move the selected marker one pixel; hold Shift for five.</p>
+          <DialogFooter>
+            {adjustingCamera?.modelSource === 'manual' && (
+              <Button onClick={() => adjustingCamera && clearFineTune(adjustingCamera)} variant="ghost"><Trash2 /> Use automatic</Button>
+            )}
+            <Button onClick={() => setAdjustingCamera(null)} variant="outline">Cancel</Button>
+            <Button onClick={saveFineTune}><Save /> Review & save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog onOpenChange={(open) => { if (!open) { setPendingAction(null); setPendingRequest(null); setPreparedAction(null); } }} open={pendingAction !== null}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogMedia>{pendingAction?.destructive ? <CircleAlert /> : <ServerCog />}</AlertDialogMedia>
