@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { GameDetails, GameLobby } from '@/components/game-lobby';
 import { MatchDartboard } from '@/components/match-dartboard';
 import { StatsDashboard } from '@/components/stats-dashboard';
+import { BOARD_OPERATION_EVENT, type BoardOperation } from '@/lib/board-operation';
 import {
   applyHit,
   checkoutSuggestion,
@@ -114,12 +115,25 @@ export default function Home() {
   const [sessionReady, setSessionReady] = useState(false);
   const [restoredMatch, setRestoredMatch] = useState(false);
   const [secureScoringBlocked, setSecureScoringBlocked] = useState(false);
+  const [boardOperation, setBoardOperation] = useState<BoardOperation | null>(null);
   const matchRef = useRef<MatchState | null>(null);
   const lastMessageRef = useRef({ key: '', receivedAt: 0 });
+  const boardOperationRef = useRef<BoardOperation | null>(null);
 
   useEffect(() => {
     matchRef.current = match;
   }, [match]);
+
+  useEffect(() => {
+    const onBoardOperation = (event: Event) => {
+      const detail = (event as CustomEvent<BoardOperation>).detail;
+      const operation = detail?.active ? detail : null;
+      boardOperationRef.current = operation;
+      setBoardOperation(operation);
+    };
+    window.addEventListener(BOARD_OPERATION_EVENT, onBoardOperation);
+    return () => window.removeEventListener(BOARD_OPERATION_EVENT, onBoardOperation);
+  }, []);
 
   useEffect(() => {
     const restored = parseMatchSession(window.localStorage.getItem(MATCH_SESSION_STORAGE_KEY));
@@ -271,6 +285,7 @@ export default function Home() {
     if (!boardHost) return;
     let websocket: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let offlineTimer: ReturnType<typeof setTimeout> | null = null;
     let active = true;
 
     const resolvedHost = boardHost;
@@ -286,7 +301,7 @@ export default function Home() {
 
     const connect = () => {
       if (!active) return;
-      setSocketStatus('connecting');
+      if (!offlineTimer) setSocketStatus('connecting');
       try {
         websocket = new WebSocket(`ws://${resolvedHost}:13520/scores`);
       } catch {
@@ -298,8 +313,12 @@ export default function Home() {
 
       websocket.onopen = () => {
         if (!active) return;
+        if (offlineTimer) {
+          clearTimeout(offlineTimer);
+          offlineTimer = null;
+        }
         setSocketStatus('connected');
-        setLastSignal('Board connected');
+        if (!boardOperationRef.current) setLastSignal('Board connected');
       };
       websocket.onmessage = (event) => {
         if (!active) return;
@@ -339,7 +358,15 @@ export default function Home() {
       websocket.onerror = () => websocket?.close();
       websocket.onclose = () => {
         if (!active) return;
-        setSocketStatus('offline');
+        if (!offlineTimer) {
+          setSocketStatus('connecting');
+          if (!boardOperationRef.current) setLastSignal('Reconnecting to board…');
+          offlineTimer = setTimeout(() => {
+            if (!active || websocket?.readyState === WebSocket.OPEN) return;
+            setSocketStatus('offline');
+            if (!boardOperationRef.current) setLastSignal('Board connection unavailable');
+          }, 12_000);
+        }
         retryTimer = setTimeout(connect, 2000);
       };
     };
@@ -348,6 +375,7 @@ export default function Home() {
     return () => {
       active = false;
       if (retryTimer) clearTimeout(retryTimer);
+      if (offlineTimer) clearTimeout(offlineTimer);
       websocket?.close();
     };
   }, [boardHost, scoreToken]);
@@ -521,13 +549,20 @@ export default function Home() {
             {historyStatus === 'saving' || historyStatus === 'checking' ? <LoaderCircle /> : historyStatus === 'offline' ? <Database /> : <Check />}
             <span>{historyStatus === 'saving' ? 'Saving' : historyStatus === 'checking' ? 'History' : historyStatus === 'offline' ? 'History offline' : 'History saved'}</span>
           </div>
-          <span className="last-signal">{lastSignal}</span>
-          <Badge className={`status-pill status-${socketStatus}`} variant="outline">
-            {socketStatus === 'offline' || socketStatus === 'blocked' ? <WifiOff className="size-3.5" /> : <Radio className="size-3.5" />}
-            {socketStatus === 'connected' ? 'Live' : socketStatus === 'connecting' ? 'Connecting' : socketStatus === 'blocked' ? 'Use LAN app' : 'Board offline'}
+          <span className="last-signal">{boardOperation?.message || lastSignal}</span>
+          <Badge className={`status-pill status-${boardOperation ? 'operation' : socketStatus}`} variant="outline">
+            {boardOperation ? <LoaderCircle className="size-3.5 is-spinning" /> : socketStatus === 'offline' || socketStatus === 'blocked' ? <WifiOff className="size-3.5" /> : <Radio className="size-3.5" />}
+            {boardOperation?.title || (socketStatus === 'connected' ? 'Live' : socketStatus === 'connecting' ? 'Reconnecting' : socketStatus === 'blocked' ? 'Use LAN app' : 'Board offline')}
           </Badge>
         </div>
       </header>
+
+      {boardOperation && (
+        <aside className="board-operation-banner" role="status">
+          <LoaderCircle className="is-spinning" />
+          <div><strong>{boardOperation.title}</strong><span>{boardOperation.message}</span></div>
+        </aside>
+      )}
 
       {secureScoringBlocked && boardHost && (
         <aside className="secure-scoring-alert" role="alert">

@@ -35,6 +35,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { announceBoardOperation } from '@/lib/board-operation';
 import {
   Dialog,
   DialogContent,
@@ -343,10 +344,21 @@ export function BoardAdmin({
   const runAction = async () => {
     if (!pendingAction || !pendingRequest || !preparedAction) return;
     const requested = pendingAction;
-      setPendingAction(null);
-      setPendingRequest(null);
+    setPendingAction(null);
+    setPendingRequest(null);
     setRunningAction(requested.action);
     setNotice(null);
+    const isCalibration = requested.action === 'calibrate'
+      || requested.action === 'manual_alignment'
+      || requested.action === 'clear_alignment';
+    announceBoardOperation({
+      active: true,
+      action: requested.action,
+      title: isCalibration ? 'Calibrating' : 'Updating board',
+      message: isCalibration
+        ? 'Keep the board empty while the cameras restart and reconnect.'
+        : `${requested.label} is in progress. The score connection will return automatically.`,
+    });
     try {
       const response = await fetch(`/api/control/v1/actions/${encodeURIComponent(preparedAction.confirmationId)}/execute`, {
         method: 'POST',
@@ -361,26 +373,26 @@ export function BoardAdmin({
       });
       const payload = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(payload.error || 'The board action failed');
-      setNotice(payload.message || `${requested.label} complete`);
-      window.setTimeout(() => {
-        setOverlayErrors({});
-        setOverlayVersion(Date.now());
-        void refresh(true);
-      }, 1200);
-      if (requested.action === 'calibrate' || requested.action === 'manual_alignment' || requested.action === 'clear_alignment') {
-        window.setTimeout(async () => {
-          const refreshed = await refresh(true);
-          setOverlayErrors({});
-          setOverlayVersion(Date.now());
-          if (refreshed) {
-            setNotice(`Calibration finished. ${refreshed.calibration.message}`);
-          }
-        }, 10_000);
+      setNotice(payload.message || `${requested.label} is in progress`);
+      await new Promise((resolve) => window.setTimeout(resolve, isCalibration ? 10_000 : 3_000));
+      const refreshed = await refresh(true);
+      setOverlayErrors({});
+      setOverlayVersion(Date.now());
+      if (refreshed) {
+        setNotice(isCalibration
+          ? `Calibration finished. ${refreshed.calibration.message}`
+          : `${requested.label} complete.`);
       }
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : 'The board action failed');
     } finally {
       setRunningAction(null);
+      announceBoardOperation({
+        active: false,
+        action: requested.action,
+        title: isCalibration ? 'Calibrating' : 'Updating board',
+        message: '',
+      });
     }
   };
 

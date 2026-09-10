@@ -26,6 +26,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { announceBoardOperation } from '@/lib/board-operation';
 import {
   type BoardStatus,
   calibrationStateLabel,
@@ -140,7 +141,13 @@ export function LobbyBoardOverview({
     if (!prepared || !boardEmpty) return;
     setDialogOpen(false);
     setCalibrating(true);
-    setNotice('Calibration started. Keep the board clear.');
+    setNotice('Recalibrating cameras. The live score connection will return automatically.');
+    announceBoardOperation({
+      active: true,
+      action: 'calibrate',
+      title: 'Calibrating',
+      message: 'Keep the board empty while the cameras restart and reconnect.',
+    });
     try {
       const response = await fetch(
         `/api/control/v1/actions/${encodeURIComponent(prepared.confirmationId)}/execute`,
@@ -155,15 +162,20 @@ export function LobbyBoardOverview({
       );
       const payload = await response.json() as { error?: string; message?: string };
       if (!response.ok) throw new Error(payload.error || 'Calibration failed to start');
-      setNotice(payload.message || 'Calibration started. Keep the board clear.');
-      window.setTimeout(async () => {
-        const refreshed = await refresh(true);
-        if (refreshed) setNotice(`Calibration finished. ${refreshed.calibration.message}`);
-        setCalibrating(false);
-      }, 10_000);
+      setNotice(payload.message || 'Recalibrating cameras. Keep the board clear.');
+      await new Promise((resolve) => window.setTimeout(resolve, 10_000));
+      const refreshed = await refresh(true);
+      if (refreshed) setNotice(`Calibration finished. ${refreshed.calibration.message}`);
     } catch (caught) {
       setNotice(caught instanceof Error ? caught.message : 'Calibration failed to start');
+    } finally {
       setCalibrating(false);
+      announceBoardOperation({
+        active: false,
+        action: 'calibrate',
+        title: 'Calibrating',
+        message: '',
+      });
     }
   };
 
