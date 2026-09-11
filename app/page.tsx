@@ -27,6 +27,13 @@ import { MatchDartboard } from '@/components/match-dartboard';
 import { StatsDashboard } from '@/components/stats-dashboard';
 import { BOARD_OPERATION_EVENT, type BoardOperation } from '@/lib/board-operation';
 import {
+  applyBoardScoreEvent,
+  compareBoardEvents,
+  parseDiagnosticBoardEvent,
+  parseLiveBoardEvent,
+  type BoardScoreEvent,
+} from '@/lib/board-events';
+import {
   applyHit,
   checkoutSuggestion,
   createMatch,
@@ -42,6 +49,7 @@ import {
 import {
   encodeMatchSession,
   MATCH_SESSION_STORAGE_KEY,
+  parseMatchSnapshot,
   parseMatchSession,
 } from '@/lib/match-session';
 import {
@@ -84,6 +92,11 @@ const throwTimestamp = (value?: number | string) => {
   return new Date().toISOString();
 };
 
+const manualBoardCursor = () => {
+  const timestamp = Date.now();
+  return { eventId: `manual-${timestamp}`, timestamp };
+};
+
 const isLocalBoardHost = (host: string) => (
   host === 'localhost'
   || host === '127.0.0.1'
@@ -117,7 +130,6 @@ export default function Home() {
   const [secureScoringBlocked, setSecureScoringBlocked] = useState(false);
   const [boardOperation, setBoardOperation] = useState<BoardOperation | null>(null);
   const matchRef = useRef<MatchState | null>(null);
-  const lastMessageRef = useRef({ key: '', receivedAt: 0 });
   const boardOperationRef = useRef<BoardOperation | null>(null);
 
   useEffect(() => {
@@ -136,21 +148,42 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const restored = parseMatchSession(window.localStorage.getItem(MATCH_SESSION_STORAGE_KEY));
-    if (restored) {
-      matchRef.current = restored.match;
-      setMatch(restored.match);
-      setHistory(restored.history);
-      setSetup({
-        mode: restored.match.config.mode,
-        inRule: restored.match.config.inRule,
-        outRule: restored.match.config.outRule,
-      });
-      setView('play');
-      setRestoredMatch(true);
-      setLastSignal('Match restored after refresh');
-    }
-    setSessionReady(true);
+    let active = true;
+    const restore = async () => {
+      const local = parseMatchSession(window.localStorage.getItem(MATCH_SESSION_STORAGE_KEY));
+      let restoredMatchState = local?.match || null;
+      let restoredHistory = local?.history || [];
+      let source = local ? 'this browser' : '';
+      try {
+        const response = await fetch('/api/matches/active', { cache: 'no-store' });
+        const payload = await response.json() as { match?: unknown };
+        const shared = response.ok ? parseMatchSnapshot(payload.match) : null;
+        if (shared) {
+          restoredMatchState = shared;
+          restoredHistory = [];
+          source = 'the board';
+        }
+      } catch {
+        // The browser snapshot remains an offline fallback.
+      }
+      if (!active) return;
+      if (restoredMatchState) {
+        matchRef.current = restoredMatchState;
+        setMatch(restoredMatchState);
+        setHistory(restoredHistory);
+        setSetup({
+          mode: restoredMatchState.config.mode,
+          inRule: restoredMatchState.config.inRule,
+          outRule: restoredMatchState.config.outRule,
+        });
+        setView('play');
+        setRestoredMatch(true);
+        setLastSignal(`Match restored from ${source}`);
+      }
+      setSessionReady(true);
+    };
+    void restore();
+    return () => { active = false; };
   }, []);
 
   const loadProfiles = useCallback(async () => {
@@ -213,6 +246,22 @@ export default function Home() {
         keepalive,
       });
       if (!response.ok) throw new Error('Save failed');
+      const payload = await response.json() as {
+        accepted?: boolean;
+        match?: unknown;
+        revision?: number;
+      };
+      if (payload.accepted === false) {
+        const shared = parseMatchSnapshot(payload.match);
+        const current = matchRef.current;
+        if (shared && current?.id === shared.id
+          && (shared.syncRevision || 0) >= (current.syncRevision || 0)) {
+          matchRef.current = shared;
+          setMatch(shared);
+          setHistory([]);
+          setLastSignal('Game synchronized with the board');
+        }
+      }
       setHistoryStatus('saved');
     } catch {
       setHistoryStatus('offline');
@@ -240,10 +289,62 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [match, persistMatch]);
 
+  useEffect(() => {
+    if (!sessionReady) return;
+    let active = true;
+    const refreshSharedMatch = async () => {
+      try {
+        const response = await fetch('/api/matches/active', { cache: 'no-store' });
+        if (!response.ok || !active) return;
+        const payload = await response.json() as { match?: unknown };
+        const shared = parseMatchSnapshot(payload.match);
+        const current = matchRef.current;
+        if (!shared) return;
+        if (!current) {
+          matchRef.current = shared;
+          setMatch(shared);
+          setHistory([]);
+          setView('play');
+          setRestoredMatch(true);
+          setLastSignal('Active game opened from the board');
+          return;
+        }
+        const sharedRevision = shared.syncRevision || 0;
+        const currentRevision = current.syncRevision || 0;
+        const sharedIsNewerMatch = shared.id !== current.id
+          && Date.parse(shared.startedAt) > Date.parse(current.startedAt);
+        if ((shared.id === current.id && sharedRevision > currentRevision) || sharedIsNewerMatch) {
+          matchRef.current = shared;
+          setMatch(shared);
+          setHistory([]);
+          setSetup({
+            mode: shared.config.mode,
+            inRule: shared.config.inRule,
+            outRule: shared.config.outRule,
+          });
+          setView('play');
+          setRestoredMatch(true);
+          setLastSignal('Game updated from another screen');
+        }
+      } catch {
+        // Keep playing from the local copy until the shared service returns.
+      }
+    };
+    const timer = window.setInterval(() => { void refreshSharedMatch(); }, 1500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [sessionReady]);
+
   const commit = useCallback((transform: (current: MatchState) => MatchState) => {
     const current = matchRef.current;
     if (!current) return;
-    const next = transform(current);
+    const transformed = transform(current);
+    const next = transformed === current ? current : {
+      ...transformed,
+      syncRevision: (current.syncRevision || 0) + 1,
+    };
     if (next === current) return;
     setHistory((items) => [...items.slice(-49), current]);
     matchRef.current = next;
@@ -259,7 +360,12 @@ export default function Home() {
     boardEventId?: string,
   ) => {
     if (token === 'END') {
-      commit(endVisit);
+      commit((current) => ({
+        ...endVisit(current),
+        ...(source.toLowerCase() === 'board'
+          ? {}
+          : { boardEventCursor: manualBoardCursor() }),
+      }));
       setLastSignal(`${source}: darts cleared`);
       return;
     }
@@ -277,15 +383,41 @@ export default function Home() {
         && Number.isFinite(boardPosition.x)
         && Number.isFinite(boardPosition.y) ? { boardPosition } : {}),
     };
-    commit((current) => applyHit(current, hit));
+    commit((current) => ({
+      ...applyHit(current, hit),
+      ...(source.toLowerCase() === 'board'
+        ? {}
+        : { boardEventCursor: manualBoardCursor() }),
+    }));
     setLastSignal(`${source}: ${hit.label}`);
   }, [commit]);
+
+  const applyBoardEvent = useCallback((event: BoardScoreEvent) => {
+    let applied = false;
+    commit((current) => {
+      const next = applyBoardScoreEvent(current, event);
+      applied = next !== current;
+      return next;
+    });
+    if (!applied) return false;
+    if (event.score !== 'END') {
+      setLastBoardDetection({ eventId: event.eventId, detectedScore: event.score });
+      setReportStatus('idle');
+      setReportOpen(false);
+    }
+    setLastSignal(event.score === 'END' ? 'Board: darts cleared' : `Board: ${event.score}`);
+    return true;
+  }, [commit]);
+
+  const activeMatchId = match?.id;
 
   useEffect(() => {
     if (!boardHost) return;
     let websocket: WebSocket | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let offlineTimer: ReturnType<typeof setTimeout> | null = null;
+    let recovering = false;
+    let pendingEvents: BoardScoreEvent[] = [];
     let active = true;
 
     const resolvedHost = boardHost;
@@ -298,6 +430,47 @@ export default function Home() {
     }
 
     setSecureScoringBlocked(false);
+
+    const recoverMissedEvents = async () => {
+      if (!active || recovering) return;
+      recovering = true;
+      let recordedEvents: BoardScoreEvent[] = [];
+      try {
+        const response = await fetch(`http://${resolvedHost}:13520/debug/events?limit=250&summary=1`, {
+          cache: 'no-store',
+        });
+        if (response.ok) {
+          const payload = await response.json() as unknown;
+          if (Array.isArray(payload)) {
+            recordedEvents = payload
+              .map(parseDiagnosticBoardEvent)
+              .filter((item): item is BoardScoreEvent => Boolean(item));
+          }
+        }
+      } catch {
+        // Live delivery continues even if historical diagnostics are temporarily unavailable.
+      }
+
+      const merged = new Map<string, BoardScoreEvent>();
+      for (const event of [...recordedEvents, ...pendingEvents]) merged.set(event.eventId, event);
+      pendingEvents = [];
+      let applied = 0;
+      for (const event of [...merged.values()].sort(compareBoardEvents)) {
+        if (applyBoardEvent(event)) applied += 1;
+      }
+      recovering = false;
+
+      if (pendingEvents.length) {
+        const queued = pendingEvents.sort(compareBoardEvents);
+        pendingEvents = [];
+        for (const event of queued) {
+          if (applyBoardEvent(event)) applied += 1;
+        }
+      }
+      if (applied > 0 && !boardOperationRef.current) {
+        setLastSignal(`Caught up ${applied} missed board event${applied === 1 ? '' : 's'}`);
+      }
+    };
 
     const connect = () => {
       if (!active) return;
@@ -318,39 +491,16 @@ export default function Home() {
           offlineTimer = null;
         }
         setSocketStatus('connected');
-        if (!boardOperationRef.current) setLastSignal('Board connected');
+        if (!boardOperationRef.current) setLastSignal('Board connected · checking for missed darts');
+        void recoverMissedEvents();
       };
       websocket.onmessage = (event) => {
         if (!active) return;
         try {
-          const payload = JSON.parse(event.data) as {
-            score?: string;
-            timestamp?: number | string;
-            position?: { x: number; y: number };
-            boardPosition?: { x: number; y: number };
-            board_position?: { x: number; y: number };
-            normalizedPosition?: { x: number; y: number };
-            event_id?: string;
-            eventId?: string;
-          };
-          if (!payload.score) return;
-          const now = Date.now();
-          const key = `${payload.timestamp ?? ''}:${payload.score}`;
-          if (key === lastMessageRef.current.key && now - lastMessageRef.current.receivedAt < 500) {
-            return;
-          }
-          lastMessageRef.current = { key, receivedAt: now };
-          const normalizedPosition = payload.boardPosition
-            || payload.board_position
-            || payload.normalizedPosition;
-          const eventId = payload.event_id || payload.eventId;
-          const score = payload.score.toUpperCase();
-          if (eventId && score !== 'END') {
-            setLastBoardDetection({ eventId, detectedScore: score });
-            setReportStatus('idle');
-            setReportOpen(false);
-          }
-          scoreToken(score, 'Board', payload.position, normalizedPosition, payload.timestamp, eventId);
+          const parsed = parseLiveBoardEvent(JSON.parse(event.data));
+          if (!parsed) return;
+          if (recovering) pendingEvents.push(parsed);
+          else applyBoardEvent(parsed);
         } catch {
           setLastSignal('Ignored an unreadable board message');
         }
@@ -378,7 +528,7 @@ export default function Home() {
       if (offlineTimer) clearTimeout(offlineTimer);
       websocket?.close();
     };
-  }, [boardHost, scoreToken]);
+  }, [activeMatchId, applyBoardEvent, boardHost]);
 
   const reportDetection = useCallback(async (actualScore: string) => {
     if (!lastBoardDetection || !boardHost) return;
@@ -402,7 +552,11 @@ export default function Home() {
         boardEventId: lastBoardDetection.eventId,
         thrownAt: latest.thrownAt || new Date().toISOString(),
       };
-      const corrected = applyHit(previous, correctedHit);
+      const corrected = {
+        ...applyHit(previous, correctedHit),
+        boardEventCursor: current.boardEventCursor,
+        syncRevision: (current.syncRevision || 0) + 1,
+      };
       matchRef.current = corrected;
       setMatch(corrected);
     }
@@ -497,7 +651,11 @@ export default function Home() {
   const returnToLobby = () => {
     const current = matchRef.current;
     if (current?.status === 'active') {
-      void persistMatch({ ...current, status: 'abandoned' }, true);
+      void persistMatch({
+        ...current,
+        status: 'abandoned',
+        syncRevision: (current.syncRevision || 0) + 1,
+      }, true);
     }
     setMatch(null);
     matchRef.current = null;
@@ -515,9 +673,15 @@ export default function Home() {
   const undo = () => {
     const previous = history.at(-1);
     if (!previous) return;
+    const current = matchRef.current;
+    const restored = {
+      ...previous,
+      boardEventCursor: manualBoardCursor(),
+      syncRevision: (current?.syncRevision || 0) + 1,
+    };
     setHistory((items) => items.slice(0, -1));
-    matchRef.current = previous;
-    setMatch(previous);
+    matchRef.current = restored;
+    setMatch(restored);
     setLastSignal('Last board action undone');
   };
 

@@ -70,6 +70,13 @@ export type MatchState = {
   winner: number | null;
   message: string;
   visits: VisitRecord[];
+  /** Monotonic client revision used to prevent an older browser from overwriting shared state. */
+  syncRevision?: number;
+  /** Latest scorer event incorporated into this match, including dart-pull events. */
+  boardEventCursor?: {
+    eventId: string;
+    timestamp: number;
+  };
 };
 
 const emptyMarks = (): Record<CricketTarget, number> => ({
@@ -122,6 +129,7 @@ export function createMatch(config: MatchConfig): MatchState {
     winner: null,
     message: `${players[0].name} to throw`,
     visits: [],
+    syncRevision: 0,
   };
 }
 

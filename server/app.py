@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -98,12 +99,20 @@ class StatsDatabase:
             os.makedirs(parent, exist_ok=True)
         self.initialize()
 
+    @contextmanager
     def connect(self):
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 15000")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def initialize(self):
         self.backup_legacy_database()
@@ -131,7 +140,9 @@ class StatsDatabase:
                     winner_player_id INTEGER REFERENCES players(id),
                     started_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    completed_at TEXT
+                    completed_at TEXT,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    snapshot_json TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS match_players (
@@ -193,8 +204,9 @@ class StatsDatabase:
                 """
             )
             self.ensure_profile_schema(connection)
+            self.ensure_match_snapshot_schema(connection)
             self.backfill_legacy_darts(connection)
-            connection.execute("PRAGMA user_version = 2")
+            connection.execute("PRAGMA user_version = 3")
             connection.execute("PRAGMA optimize")
 
     @staticmethod
@@ -220,6 +232,16 @@ class StatsDatabase:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_players_normalized_email "
             "ON players(normalized_email) WHERE normalized_email IS NOT NULL"
         )
+
+    @staticmethod
+    def ensure_match_snapshot_schema(connection):
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(matches)").fetchall()
+        }
+        if "revision" not in columns:
+            connection.execute("ALTER TABLE matches ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+        if "snapshot_json" not in columns:
+            connection.execute("ALTER TABLE matches ADD COLUMN snapshot_json TEXT")
 
     def backup_legacy_database(self):
         if not os.path.exists(self.path) or os.path.getsize(self.path) == 0:
@@ -336,6 +358,8 @@ class StatsDatabase:
             "winner": payload.get("winner"),
             "started_at": str(payload.get("startedAt") or utc_now()),
             "completed_at": payload.get("completedAt"),
+            "revision": safe_int(payload.get("syncRevision"), 0, 2_147_483_647),
+            "snapshot_json": json.dumps(payload, separators=(",", ":"), sort_keys=True),
         }
 
     def sync_match(self, payload):
@@ -343,6 +367,34 @@ class StatsDatabase:
         now = utc_now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT revision, snapshot_json FROM matches WHERE id = ?",
+                (match["id"],),
+            ).fetchone()
+            if existing and existing["snapshot_json"]:
+                existing_revision = safe_int(existing["revision"], 0, 2_147_483_647)
+                if match["revision"] < existing_revision or (
+                    match["revision"] == existing_revision
+                    and match["snapshot_json"] != existing["snapshot_json"]
+                ):
+                    connection.rollback()
+                    return {
+                        "ok": True,
+                        "accepted": False,
+                        "matchId": match["id"],
+                        "revision": existing_revision,
+                        "match": json.loads(existing["snapshot_json"]),
+                        "savedAt": now,
+                    }
+                if match["revision"] == existing_revision:
+                    connection.rollback()
+                    return {
+                        "ok": True,
+                        "accepted": True,
+                        "matchId": match["id"],
+                        "revision": existing_revision,
+                        "savedAt": now,
+                    }
             player_ids = []
             for player in match["players"]:
                 row = None
@@ -404,8 +456,8 @@ class StatsDatabase:
                 """
                 INSERT INTO matches(
                     id, mode, in_rule, out_rule, status, winner_player_id,
-                    started_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    started_at, updated_at, completed_at, revision, snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     mode = excluded.mode,
                     in_rule = excluded.in_rule,
@@ -413,11 +465,14 @@ class StatsDatabase:
                     status = excluded.status,
                     winner_player_id = excluded.winner_player_id,
                     updated_at = excluded.updated_at,
-                    completed_at = excluded.completed_at
+                    completed_at = excluded.completed_at,
+                    revision = excluded.revision,
+                    snapshot_json = excluded.snapshot_json
                 """,
                 (
                     match["id"], match["mode"], match["in_rule"], match["out_rule"],
                     match["status"], winner_player_id, match["started_at"], now, completed_at,
+                    match["revision"], match["snapshot_json"],
                 ),
             )
             connection.execute("DELETE FROM dart_throws WHERE match_id = ?", (match["id"],))
@@ -490,7 +545,32 @@ class StatsDatabase:
                 )
 
             connection.commit()
-        return {"ok": True, "matchId": match["id"], "savedAt": now}
+        return {
+            "ok": True,
+            "accepted": True,
+            "matchId": match["id"],
+            "revision": match["revision"],
+            "savedAt": now,
+        }
+
+    def active_match(self):
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status, snapshot_json, revision, updated_at
+                FROM matches
+                WHERE snapshot_json IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row or row["status"] != "active":
+            return {"match": None, "revision": None, "updatedAt": None}
+        return {
+            "match": json.loads(row["snapshot_json"]),
+            "revision": row["revision"],
+            "updatedAt": row["updated_at"],
+        }
 
     def profiles(self):
         with self.connect() as connection:
@@ -795,6 +875,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/players":
             self.send_json(200, {"players": self.database.profiles()})
+            return
+        if path == "/api/matches/active":
+            self.send_json(200, self.database.active_match())
             return
         if path == "/api/heatmap":
             try:

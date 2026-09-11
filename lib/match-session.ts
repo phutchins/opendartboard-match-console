@@ -13,7 +13,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
 
-function isRecoverableMatch(value: unknown): value is MatchState {
+export function isRecoverableMatch(value: unknown): value is MatchState {
   if (!isRecord(value) || typeof value.id !== 'string') return false;
   if (value.status !== 'active' && value.status !== 'completed') return false;
   if (!isRecord(value.config)) return false;
@@ -31,6 +31,10 @@ function isRecoverableMatch(value: unknown): value is MatchState {
     && Array.isArray(value.visits)
     && typeof value.awaitingClear === 'boolean'
     && typeof value.visitScore === 'number';
+}
+
+export function parseMatchSnapshot(value: unknown): MatchState | null {
+  return isRecoverableMatch(value) ? value : null;
 }
 
 export function encodeMatchSession(match: MatchState, history: MatchState[]) {

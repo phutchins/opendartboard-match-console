@@ -74,6 +74,7 @@ class StatsDatabaseTests(unittest.TestCase):
         payload = completed_match()
         self.database.sync_match(payload)
         payload["visits"] = payload["visits"][:1]
+        payload["syncRevision"] = 1
         self.database.sync_match(payload)
 
         with self.database.connect() as connection:
@@ -82,6 +83,39 @@ class StatsDatabaseTests(unittest.TestCase):
                 (payload["id"],),
             ).fetchone()[0]
         self.assertEqual(visit_count, 1)
+
+    def test_active_match_snapshot_is_shared_and_rejects_stale_browser_state(self):
+        first = completed_match()
+        first.update({
+            "id": "match_shared_active",
+            "status": "active",
+            "completedAt": None,
+            "winner": None,
+            "activePlayer": 0,
+            "darts": [],
+            "visitScore": 0,
+            "visitStartScore": 458,
+            "awaitingClear": False,
+            "bust": False,
+            "message": "Alice to throw",
+            "syncRevision": 0,
+        })
+        first["players"][0]["score"] = 458
+        self.assertTrue(self.database.sync_match(first)["accepted"])
+
+        newer = {**first, "syncRevision": 1}
+        newer["players"] = [dict(player) for player in first["players"]]
+        newer["players"][0]["score"] = 351
+        self.assertTrue(self.database.sync_match(newer)["accepted"])
+
+        stale_result = self.database.sync_match(first)
+        self.assertFalse(stale_result["accepted"])
+        self.assertEqual(stale_result["match"]["players"][0]["score"], 351)
+        self.assertEqual(self.database.active_match()["match"]["players"][0]["score"], 351)
+
+        abandoned = {**newer, "status": "abandoned", "syncRevision": 2}
+        self.assertTrue(self.database.sync_match(abandoned)["accepted"])
+        self.assertIsNone(self.database.active_match()["match"])
 
     def test_active_matches_do_not_change_lifetime_stats(self):
         payload = completed_match()

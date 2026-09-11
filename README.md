@@ -13,6 +13,8 @@ A local-first game client and board operations console for [OpenDartboard](https
 - Builds an in-game heat map for every player and historical maps over 7, 30, or 90 days, one year, or all time
 - Supports undo and manual score correction
 - Stores match history, player averages, win rates, and high visits in SQLite
+- Keeps the active match authoritative on the board host so every browser resumes the same score
+- Replays any persisted scoring events that arrived while the browser was disconnected
 - Shows calibration health, camera scoring roles, and the latest visual overlay from every camera
 - Restores an active match after refresh and exposes a Resume action after visiting Stats or Board
 - Recalibrates or restarts OpenDartboard from the client
@@ -21,7 +23,7 @@ A local-first game client and board operations console for [OpenDartboard](https
 
 ## Architecture
 
-The browser connects directly to OpenDartboard on port `13520` for live scores. Same-origin application APIs persist game history and control the local board host.
+The browser connects directly to OpenDartboard on port `13520` for live scores. On every connection it first reads the scorer's persisted event summaries, applies only events newer than the match cursor, and then drains queued live events in timestamp order. Same-origin application APIs persist the authoritative active-match snapshot, reject stale browser writes, and let other browsers converge on the same revision.
 
 Board operations do **not** expose SSH, Docker, sudo, or host credentials to JavaScript. A root-owned service listens only on a Unix socket and accepts a fixed action enum. State-changing requests require a same-origin header, a short-lived server confirmation, and explicit acknowledgement when the board must be empty. The public web container never receives the Docker socket.
 
@@ -53,6 +55,8 @@ Run this from the repository root after building:
 The installer uses the invoking user's `~/.local/share/opendartboard` directory by default. Override `OPENDARTBOARD_DATA_DIR` or `OPENDARTBOARD_STATS_DIR` when your scorer or existing history lives elsewhere.
 
 Open `http://<board-host>:8090/`. The scoring host is detected from the page hostname and can be changed on the **Board** screen. The installer preserves the SQLite data directory and does not modify the upstream scorer image.
+
+Missed-event recovery requires OpenDartboard diagnostic event persistence (`--debug`) and a scorer build that supports `GET /debug/events?summary=1`. The Board screen enables debug mode by default for the modified scorer release.
 
 The control service defaults are intentionally explicit. If your image names, camera devices, or service name differ, review `server/opendartboard-control.service` and `server/board_control.py` before installation.
 
