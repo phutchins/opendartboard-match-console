@@ -469,6 +469,8 @@ export default function Home() {
       }
       if (applied > 0 && !boardOperationRef.current) {
         setLastSignal(`Caught up ${applied} missed board event${applied === 1 ? '' : 's'}`);
+      } else if (!boardOperationRef.current) {
+        setLastSignal('Board connected');
       }
     };
 
