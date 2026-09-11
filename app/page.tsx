@@ -452,7 +452,9 @@ export default function Home() {
       }
 
       const merged = new Map<string, BoardScoreEvent>();
-      for (const event of [...recordedEvents, ...pendingEvents]) merged.set(event.eventId, event);
+      // Prefer the persisted manifest because it includes scorer state metadata
+      // that older live WebSocket payloads do not carry.
+      for (const event of [...pendingEvents, ...recordedEvents]) merged.set(event.eventId, event);
       pendingEvents = [];
       let applied = 0;
       for (const event of [...merged.values()].sort(compareBoardEvents)) {
@@ -502,7 +504,13 @@ export default function Home() {
           const parsed = parseLiveBoardEvent(JSON.parse(event.data));
           if (!parsed) return;
           if (recovering) pendingEvents.push(parsed);
-          else applyBoardEvent(parsed);
+          else if (!applyBoardEvent(parsed) && matchRef.current?.awaitingClear) {
+            // A scorer restart can reset its board state to CLEAN without emitting
+            // END. Enrich the first new dart from its persisted manifest and use
+            // CLEAN -> DART_1 to close the previous visit safely.
+            pendingEvents.push(parsed);
+            void recoverMissedEvents();
+          }
         } catch {
           setLastSignal('Ignored an unreadable board message');
         }

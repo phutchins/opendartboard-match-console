@@ -7,6 +7,7 @@ export type BoardScoreEvent = {
   timestamp: number;
   cameraPosition?: { x: number; y: number };
   boardPosition?: { x: number; y: number };
+  state?: { previous: string; current: string };
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -23,6 +24,13 @@ const point = (value: unknown) => {
 };
 
 const textValue = (value: unknown) => typeof value === 'string' ? value : '';
+
+const boardState = (value: unknown) => {
+  if (!isRecord(value)) return undefined;
+  const previous = textValue(value.previous).toUpperCase();
+  const current = textValue(value.current).toUpperCase();
+  return previous && current ? { previous, current } : undefined;
+};
 
 const eventTimestampFromId = (eventId: string) => {
   const match = eventId.match(/^event-(\d+)-/);
@@ -49,6 +57,7 @@ export function parseLiveBoardEvent(value: unknown): BoardScoreEvent | null {
     timestamp,
     cameraPosition: point(value.position),
     boardPosition: point(value.boardPosition || value.board_position || value.normalizedPosition),
+    state: boardState(value.state),
   };
 }
 
@@ -64,6 +73,7 @@ export function parseDiagnosticBoardEvent(value: unknown): BoardScoreEvent | nul
     timestamp,
     cameraPosition: point(value.result.pixel_position),
     boardPosition: point(value.result.board_position),
+    state: boardState(value.state),
   };
 }
 
@@ -112,13 +122,21 @@ export function applyBoardScoreEvent(match: MatchState, event: BoardScoreEvent):
     score: '',
   }) <= 0) return match;
 
-  let next = match;
+  let scoringMatch = match;
+  if (event.score !== 'END' && match.awaitingClear) {
+    const startsFreshScorerVisit = event.state?.previous === 'CLEAN'
+      && event.state.current === 'DART_1';
+    if (!startsFreshScorerVisit) return match;
+    scoringMatch = endVisit(match);
+  }
+
+  let next = scoringMatch;
   if (event.score === 'END') {
     next = endVisit(match);
   } else {
     const parsed = parseScore(event.score);
     if (!parsed) return match;
-    next = applyHit(match, {
+    next = applyHit(scoringMatch, {
       ...parsed,
       inputSource: 'board',
       boardEventId: event.eventId,

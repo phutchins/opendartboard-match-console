@@ -17,6 +17,7 @@ test('parses live and persisted scorer events into the same shape', () => {
     timestamp: 1789156392756,
     position: { x: 611, y: 362 },
     board_position: { x: -0.04, y: -0.43 },
+    state: { previous: 'CLEAN', current: 'DART_1' },
   });
   const persisted = parseDiagnosticBoardEvent({
     event_id: 'event-1789156392756-5',
@@ -27,6 +28,7 @@ test('parses live and persisted scorer events into the same shape', () => {
       pixel_position: { x: 611, y: 362 },
       board_position: { x: -0.04, y: -0.43 },
     },
+    state: { previous: 'CLEAN', current: 'DART_1' },
   });
 
   assert.deepEqual(persisted, live);
@@ -76,4 +78,38 @@ test('does not replay events from before the match or before its cursor', () => 
   assert.equal(applyBoardScoreEvent(match, {
     eventId: 'event-1789156392000-1', timestamp: start + 2000, score: 'T20',
   }), match);
+});
+
+test('uses a fresh scorer visit to recover a missing dart-removal event', () => {
+  let match = {
+    ...createMatch({
+      mode: '501', players: ['Ada'], inRule: 'straight', outRule: 'double',
+    }),
+    startedAt: new Date(start).toISOString(),
+  };
+  for (const [index, score] of ['S20', 'S20', 'S20'].entries()) {
+    match = applyBoardScoreEvent(match, {
+      eventId: `event-${start + 1000 + index}-${index}`,
+      timestamp: start + 1000 + index,
+      score,
+    });
+  }
+  assert.equal(match.awaitingClear, true);
+
+  const firstNewDart = {
+    eventId: `event-${start + 5000}-4`,
+    timestamp: start + 5000,
+    score: 'S4',
+  };
+  assert.equal(applyBoardScoreEvent(match, firstNewDart), match);
+  assert.notEqual(match.boardEventCursor?.eventId, firstNewDart.eventId);
+
+  match = applyBoardScoreEvent(match, {
+    ...firstNewDart,
+    state: { previous: 'CLEAN', current: 'DART_1' },
+  });
+  assert.equal(match.visits.length, 1);
+  assert.equal(match.visits[0].score, 60);
+  assert.deepEqual(match.darts.map((dart) => dart.label), ['S4']);
+  assert.equal(match.players[0].score, 437);
 });
