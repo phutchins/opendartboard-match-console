@@ -737,7 +737,14 @@ function MatchScreen({
             <p className="eyebrow">{match.winner !== null ? 'Match complete' : 'Live leg'}</p>
             <h2>{match.message}</h2>
           </div>
-          <div className="board-address">{boardHost}</div>
+          <div className="score-panel-actions">
+            <div className="board-address">{boardHost}</div>
+            {match.awaitingClear && match.winner === null && (
+              <Button onClick={() => onScore('END', 'Manual')} size="sm">
+                <Check /> Darts removed
+              </Button>
+            )}
+          </div>
         </div>
 
         {match.config.mode === 'cricket' ? (

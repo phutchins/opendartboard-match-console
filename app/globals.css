@@ -427,6 +427,8 @@ body {
 .rail-actions button:last-child { grid-column: 1/-1; }
 .connection-note { display: flex; align-items: center; gap: .45rem; padding: .9rem 1.15rem 1.1rem; color: #68757b; font-family: var(--font-mono); font-size: .64rem; }
 .live-score-panel { min-width: 0; }
+.score-panel-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .55rem; }
+.score-panel-actions button { white-space: nowrap; }
 
 .cricket-board { min-width: 0; padding: .8rem 1.25rem 1.25rem; border-left: 1px solid rgba(255,255,255,.08); }
 .cricket-row { display: grid; align-items: center; min-height: 3.25rem; border-bottom: 1px solid rgba(255,255,255,.07); text-align: center; }
